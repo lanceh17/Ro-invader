@@ -1,0 +1,56 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/out/
+
+# Go
+*.test
+*.out
+vendor/
+coverage.html
+coverage.out
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Local config and secrets — never commit
+.env
+.env.*
+*.local
+*.local.*
+config.local.*
+secrets.*
+*.pem
+*.key
+!deploy/**/*.example.key
+
+# Runtime state (device inventory, risk store, logs)
+/data/
+state.db
+state.db-journal
+state.db-wal
+state.db-shm
+/logs/
+*.log
+
+# Pi image / firmware artifacts
+*.img
+*.img.xz
+*.squashfs
+*.bin
+*.ipk
+*.apk
+
+# Local opencode artifacts
+Ro-invader/
+opencode.json
+opencode.json.txt

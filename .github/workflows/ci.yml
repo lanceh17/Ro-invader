@@ -1,0 +1,126 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          # Deliberately not pinned to go.sum: the module has zero external
+          # dependencies, so no go.sum exists yet. Auto-detection handles
+          # both that and the eventual addition of a dependency.
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo
+            echo "Run: gofmt -w ."
+            exit 1
+          fi
+
+      - name: Verify modules tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "go.mod/go.sum are not tidy. Run: go mod tidy"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out
+
+      - name: Report coverage
+        run: go tool cover -func=coverage.out | tail -n 1
+
+  safety-gate:
+    name: safety gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Passive-only is an architectural commitment documented in SAFETY.md.
+      # These checks fail the build if a contribution introduces the specific
+      # patterns that would break it, so the commitment is enforced by CI
+      # rather than by reviewer vigilance alone.
+      #
+      # This is a tripwire, not a proof. It catches obvious regressions; a
+      # determined contributor could route around it. Human review of the
+      # actuator interface remains the real boundary.
+      - name: Reject active probing patterns
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # Raw SYN or socket-level construction is the fingerprint of a
+          # scanner. The project has no legitimate reason to build packets.
+          if grep -rn --include='*.go' -E 'golang\.org/x/net/icmp|syscall\.RawConn|SOCK_RAW|net\.DialIP' agent/ ; then
+            echo "::error::Raw socket or ICMP usage found in agent/. R0-Invader is passive by architecture."
+            fail=1
+          fi
+
+          # Port-scan vocabulary has no place in a control plane that only
+          # reads telemetry.
+          if grep -rn --include='*.go' -iE 'func .*(scan|probe|fuzz)' agent/ ; then
+            echo "::error::scan/probe/fuzz function found in agent/. See SAFETY.md."
+            fail=1
+          fi
+
+          exit $fail
+
+      - name: Reject remote command execution primitives
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # The system pushes firewall rules over vendor APIs. It must never
+          # gain a general-purpose execution channel, because that turns a
+          # containment tool into a remote-control tool.
+          if grep -rn --include='*.go' -E '"os/exec"' agent/ ; then
+            echo "::error::os/exec usage found in agent/. R0-Invader must not execute commands."
+            fail=1
+          fi
+
+          if grep -rn --include='*.go' -E 'ssh\.(Dial|Client)|golang\.org/x/crypto/ssh' agent/ ; then
+            echo "::error::SSH client usage found in agent/. Containment must not shell into hosts."
+            fail=1
+          fi
+
+          exit $fail
+
+      - name: Verify GPL components stay out of the binary
+        run: |
+          set -euo pipefail
+
+          # Suricata, OpenAppFilter, openNDS and similar tools are GPL and are
+          # consumed as subprocesses, never linked. A new require directive on
+          # one of them is a licensing regression, not just an architecture
+          # change.
+          if [ -f go.mod ] && grep -nE 'OpenAppFilter|openNDS|suricata|ntop/ng|dionaea|cowrie' go.mod ; then
+            echo "::error::GPL component appears in go.mod. Consume it as a subprocess instead."
+            exit 1
+          fi
+
+          echo "No GPL components linked."

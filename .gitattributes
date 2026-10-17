@@ -1,0 +1,20 @@
+# Normalize line endings to LF in the repository regardless of the
+# contributor's platform. Without this, Windows checkouts get CRLF and gofmt
+# on the Linux CI runner reports the working copy as unformatted, so a
+# correctly formatted file fails the build for reasons unrelated to its
+# contents.
+* text=auto eol=lf
+
+# Binary assets must never be newline-converted.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.zip  binary
+*.gz   binary
+*.xz   binary
+*.squashfs binary
+*.img  binary
+*.pcap binary
