@@ -38,7 +38,10 @@ jobs:
       - name: Verify modules tidy
         run: |
           go mod tidy
-          if ! git diff --exit-code go.mod go.sum; then
+          # The '--' matters: with zero external dependencies no go.sum
+          # exists, and git treats a bare pathspec that exists nowhere as a
+          # fatal error (exit 128), which would fail this step forever.
+          if ! git diff --exit-code -- go.mod go.sum; then
             echo "go.mod/go.sum are not tidy. Run: go mod tidy"
             exit 1
           fi

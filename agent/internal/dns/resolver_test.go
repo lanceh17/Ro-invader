@@ -347,8 +347,12 @@ func TestOnQueryEventFeedsThePipeline(t *testing.T) {
 // logic being correct does not prove the socket loop forwards packets.
 func TestListenAndServeRoundTrip(t *testing.T) {
 	ready := make(chan net.Addr, 1)
-	var gotSrc netip.Addr
-	var gotName string
+	// OnQuery runs on the server's goroutine, while the assertions run on the
+	// test's. A UDP round trip is not a happens-before edge the race detector
+	// can see, so the observation comes back over a channel rather than into
+	// captured variables; without this, TestListenAndServeRoundTrip fails
+	// under -race in CI while passing everywhere else.
+	observed := make(chan core.NormalizedEvent, 1)
 
 	s := testServer(t, Config{
 		ListenAddr: "127.0.0.1:0",
@@ -358,7 +362,10 @@ func TestListenAndServeRoundTrip(t *testing.T) {
 		// per-device keying is covered by TestHandleQuarantineIsPerDevice.
 		Quarantined: func(netip.Addr) bool { return true },
 		OnQuery: func(ev core.NormalizedEvent, _ Action) {
-			gotSrc, gotName = ev.Src.IP, ev.QueryName
+			select {
+			case observed <- ev:
+			default:
+			}
 		},
 		Ready: func(a net.Addr) { ready <- a },
 	}, okForward(nil))
@@ -398,14 +405,20 @@ func TestListenAndServeRoundTrip(t *testing.T) {
 	if netip.AddrFrom4([4]byte{rdata[0], rdata[1], rdata[2], rdata[3]}) != testPortal {
 		t.Errorf("rdata = %v, want portal", rdata)
 	}
-	if gotName != "cdn-lfs.huggingface.co" {
-		t.Errorf("OnQuery name = %q, want the queried name", gotName)
+	var gotEv core.NormalizedEvent
+	select {
+	case gotEv = <-observed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnQuery never fired")
+	}
+	if gotEv.QueryName != "cdn-lfs.huggingface.co" {
+		t.Errorf("OnQuery name = %q, want the queried name", gotEv.QueryName)
 	}
 	// Loopback source attribution: the sinkhole only happened because the
 	// source matched Quarantined, so the address the loop recorded is the
 	// address the policy keyed on.
-	if !gotSrc.IsValid() || !gotSrc.IsLoopback() {
-		t.Errorf("OnQuery source = %v, want a loopback address", gotSrc)
+	if src := gotEv.Src.IP; !src.IsValid() || !src.IsLoopback() {
+		t.Errorf("OnQuery source = %v, want a loopback address", src)
 	}
 
 	cancel()
