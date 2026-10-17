@@ -1,0 +1,20 @@
+[
+  {
+    "mac": "aa:bb:cc:dd:ee:01",
+    "ips": ["192.168.1.44"],
+    "class": "camera",
+    "vendor": "Hikvision"
+  },
+  {
+    "mac": "aa:bb:cc:dd:ee:02",
+    "ips": ["192.168.1.50"],
+    "class": "workstation",
+    "vendor": "Dell"
+  },
+  {
+    "mac": "aa:bb:cc:dd:ee:03",
+    "ips": ["192.168.1.60"],
+    "class": "iot",
+    "vendor": "Espressif"
+  }
+]
