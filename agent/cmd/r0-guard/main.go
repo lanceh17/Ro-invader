@@ -41,8 +41,10 @@ import (
 	"github.com/lanceh17/Ro-invader/agent/internal/act"
 	"github.com/lanceh17/Ro-invader/agent/internal/core"
 	"github.com/lanceh17/Ro-invader/agent/internal/dns"
+	"github.com/lanceh17/Ro-invader/agent/internal/feeds"
 	"github.com/lanceh17/Ro-invader/agent/internal/ingest/suricata"
 	"github.com/lanceh17/Ro-invader/agent/internal/inventory"
+	"github.com/lanceh17/Ro-invader/agent/internal/normalize"
 	"github.com/lanceh17/Ro-invader/agent/internal/pipeline"
 	"github.com/lanceh17/Ro-invader/agent/internal/portal"
 	"github.com/lanceh17/Ro-invader/agent/internal/risk"
@@ -83,12 +85,20 @@ Serve flags:
   -state <path>        persisted release store (default r0-guard-state.json)
   -audit <path>        action audit log, JSON Lines (default r0-guard-audit.jsonl)
   -remediation <path>  JSON map of vendor name to portal cleanup steps
+  -feeds <list>        comma-separated threat feeds: threatfox, urlhaus, kev
+                       (default off; threatfox/urlhaus need R0_ABUSECH_KEY)
+  -feed-interval <dur> how often enabled feeds refresh (default 6h)
+  -ioc-ttl <dur>       how long one refresh keeps indicators active (default 72h)
+  -ioc-min-confidence <n>  lowest indicator confidence that can block a name
+                       (default 75)
 
 Status:
   v0.1 containment core is in progress. analyze is read-only. serve runs the
   resolver, applies the walled garden to quarantined devices, and serves the
   remediation portal with token-gated, audited releases, but does not yet push
-  firewall rules to a router. See docs/ROADMAP.md.
+  firewall rules to a router. With -feeds it also answers NXDOMAIN for uncontained
+  devices querying names published by the enabled threat feeds; that is off
+  unless -feeds is given, and -observe disables it even then. See docs/ROADMAP.md.
 
 This tool is passive by architecture: it never probes, scans, or transmits
 to a managed device. See SAFETY.md.
@@ -266,6 +276,10 @@ func runServe(args []string) error {
 	statePath := fs.String("state", "r0-guard-state.json", "persisted release store")
 	auditPath := fs.String("audit", "r0-guard-audit.jsonl", "action audit log, one JSON object per line")
 	remediationPath := fs.String("remediation", "", "JSON map of vendor name to portal cleanup steps")
+	feedsList := fs.String("feeds", "", "comma-separated threat feeds to pull: threatfox, urlhaus, kev; empty disables feed-driven blocking")
+	feedInterval := fs.Duration("feed-interval", 6*time.Hour, "how often enabled feeds refresh")
+	iocTTL := fs.Duration("ioc-ttl", 72*time.Hour, "how long one feed refresh keeps its indicators active")
+	iocMinConfidence := fs.Int("ioc-min-confidence", 75, "lowest indicator confidence that can block a DNS answer")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -276,6 +290,22 @@ func runServe(args []string) error {
 	portalAddr, err := netip.ParseAddr(*portalIP)
 	if err != nil {
 		return fmt.Errorf("serve: -portal %q: %w", *portalIP, err)
+	}
+
+	// Validate the feed configuration before anything binds. A typo in
+	// -feeds should stop the run with a name it can fix, not surface later
+	// as a resolver that silently blocks nothing.
+	pullers, skippedFeeds, err := buildPullers(*feedsList, feedsAuthKey())
+	if err != nil {
+		return err
+	}
+	if len(pullers) > 0 {
+		if *feedInterval <= 0 {
+			return fmt.Errorf("serve: -feed-interval must be positive, got %s", *feedInterval)
+		}
+		if *iocTTL <= 0 {
+			return fmt.Errorf("serve: -ioc-ttl must be positive, got %s", *iocTTL)
+		}
 	}
 
 	// Load the inventory before binding. Without it nothing can be attributed,
@@ -321,6 +351,31 @@ func runServe(args []string) error {
 	token, err := releaseToken(*portalToken)
 	if err != nil {
 		return err
+	}
+
+	// A feed that needs an Auth-Key and did not get one is skipped loudly
+	// rather than failing the run: an operator who enabled three feeds and
+	// forgot one key still wants the other two (and the DNS resolver) to
+	// come up.
+	for _, name := range skippedFeeds {
+		fmt.Fprintf(os.Stderr, "r0-guard: feed %s skipped: no Auth-Key (set R0_ABUSECH_KEY)\n", name)
+	}
+
+	// The indicator store exists even with no feeds: an empty store is the
+	// no-blocklist default, and one code path serves both cases. -observe
+	// keeps the store populated for provenance and counts but disables the
+	// predicate below, so observing runs affect no traffic at all.
+	iocStore := normalize.NewStore(*iocMinConfidence)
+	var blocked func(string) bool
+	if len(pullers) > 0 {
+		if *observe {
+			fmt.Fprintln(os.Stderr, "r0-guard: -observe active: feeds are pulled and logged, but no answer will be blocked")
+		} else {
+			blocked = func(name string) bool {
+				_, ok := iocStore.Match(name, time.Now())
+				return ok
+			}
+		}
 	}
 
 	engine := risk.New(risk.WithHalfLife(*halfLife))
@@ -379,17 +434,27 @@ func runServe(args []string) error {
 		Portal:      portalAddr,
 		Garden:      gardenDomains,
 		Quarantined: quarantined,
+		Blocked:     blocked,
 		OnQuery: func(ev core.NormalizedEvent, action dns.Action) {
 			// The sinkhole record is written before Ingest: Handle decided
 			// from the engine state as it stood before this query was
 			// observed, so evaluating now reproduces the decision's own
 			// score, not one this query has already moved.
-			if action == dns.ActionSinkhole {
+			//
+			// Forwarded queries stay unlogged either way: they are every
+			// lookup on the network, and printing them would bury the lines
+			// that matter when something is actually acted on.
+			switch action {
+			case dns.ActionSinkhole:
 				recordSinkhole(auditLog, inv, engine, ev)
-				// Only sinkholes are logged. Forwarded queries are every
-				// lookup on the network; printing them would bury the one
-				// line that matters when a device is actually contained.
 				fmt.Fprintf(os.Stderr, "r0-guard: sinkholed %s for %s\n", ev.QueryName, ev.Src.IP)
+			case dns.ActionNXDomain:
+				// NXDOMAIN has exactly one producer: the Blocked predicate
+				// consulting the indicator store. The matching indicator is
+				// re-read here for the audit line; the decision itself was
+				// already made in Decide.
+				recordIOCBlock(auditLog, inv, iocStore, ev)
+				fmt.Fprintf(os.Stderr, "r0-guard: blocked %s for %s (threat intel)\n", ev.QueryName, ev.Src.IP)
 			}
 			pipe.Ingest(ev)
 		},
@@ -414,6 +479,14 @@ func runServe(args []string) error {
 		return err
 	case err := <-portalErrc:
 		return fmt.Errorf("serve: portal: %w", err)
+	}
+
+	// The first pull happens on this goroutine, not on the startup path:
+	// an offline install must still bring the resolver up, and the store
+	// simply stays empty until a refresh succeeds. Each failed refresh
+	// keeps the previous snapshot active rather than emptying the list.
+	if len(pullers) > 0 {
+		go feedLoop(ctx, pullers, iocStore, *feedInterval, *iocTTL)
 	}
 
 	if *reportEvery > 0 {
@@ -522,6 +595,139 @@ func recordSinkhole(auditLog *portal.Audit, inv *inventory.Inventory, eng *risk.
 	}
 	if err := auditLog.Record(entry); err != nil {
 		fmt.Fprintf(os.Stderr, "r0-guard: audit write failed: %v\n", err)
+	}
+}
+
+// recordIOCBlock writes the audit line for a DNS answer refused because the
+// name matched a feed indicator: which device, which query, which indicator
+// said so.
+//
+// Score and Tier stay zero on purpose. This action comes from the indicator
+// blocklist, not from the device's risk score, and filling those fields with
+// engine numbers would make the audit imply corroboration the blocklist
+// never had.
+func recordIOCBlock(auditLog *portal.Audit, inv *inventory.Inventory, store *normalize.Store, ev core.NormalizedEvent) {
+	entry := portal.AuditEntry{
+		Action: "ioc-block",
+		IPs:    []string{ev.Src.IP.String()},
+		Query:  ev.QueryName,
+	}
+	if inv != nil {
+		if mac, ok := inv.MACFor(ev.Src.IP); ok {
+			if dev, ok := inv.Get(mac); ok {
+				entry.MAC = mac.String()
+				entry.Vendor = dev.Vendor
+				entry.Class = string(dev.Class)
+			}
+		}
+	}
+	if store != nil {
+		if ioc, ok := store.Match(ev.QueryName, time.Now()); ok {
+			entry.Reasons = []string{fmt.Sprintf(
+				"indicator %s=%s via %s (confidence %d, expires %s)",
+				ioc.Kind, ioc.Value, strings.Join(ioc.Feeds, "+"),
+				ioc.Confidence, ioc.Expires.UTC().Format(time.RFC3339))}
+		}
+	}
+	if err := auditLog.Record(entry); err != nil {
+		fmt.Fprintf(os.Stderr, "r0-guard: audit write failed: %v\n", err)
+	}
+}
+
+// validFeeds lists the pullers serve can enable, in the order -feeds parses
+// them. SSLBL is deliberately absent: abuse.ch deprecated its botnet C2 IP
+// blacklist on 2025-01-03, and building on a dead feed is the trap
+// SAFETY.md already documents for Feodo Tracker.
+var validFeeds = []string{"threatfox", "urlhaus", "kev"}
+
+// buildPullers turns the -feeds list into pullers. Feeds that need an
+// Auth-Key and did not receive one come back in skipped rather than failing
+// the build: the operator is told which one was skipped, and the run
+// continues with the feeds that are configured. An unknown name is an
+// error — silently ignoring a typo would block nothing while looking live.
+func buildPullers(list, authKey string) ([]feeds.Puller, []string, error) {
+	var names []string
+	seen := map[string]bool{}
+	for _, n := range strings.Split(list, ",") {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+	if len(names) == 0 {
+		return nil, nil, nil
+	}
+
+	var pullers []feeds.Puller
+	var skipped []string
+	for _, n := range names {
+		switch n {
+		case "threatfox":
+			if authKey == "" {
+				skipped = append(skipped, n)
+				continue
+			}
+			pullers = append(pullers, feeds.NewThreatFox(authKey))
+		case "urlhaus":
+			if authKey == "" {
+				skipped = append(skipped, n)
+				continue
+			}
+			pullers = append(pullers, feeds.NewURLhaus(authKey))
+		case "kev":
+			pullers = append(pullers, feeds.NewKev())
+		default:
+			return nil, nil, fmt.Errorf("serve: unknown feed %q (valid: %s)", n, strings.Join(validFeeds, ", "))
+		}
+	}
+	return pullers, skipped, nil
+}
+
+// feedsAuthKey reads the abuse.ch Auth-Key shared by ThreatFox and URLhaus.
+// R0_ABUSECH_KEY is the general name; R0_THREATFOX_KEY stays honored because
+// SAFETY.md documents it as the variable ThreatFox reads from. Keys are
+// environment-only: never flags, never config files, never code.
+func feedsAuthKey() string {
+	if k := os.Getenv("R0_ABUSECH_KEY"); k != "" {
+		return k
+	}
+	return os.Getenv("R0_THREATFOX_KEY")
+}
+
+// feedLoop refreshes every enabled feed: one cycle immediately, then on the
+// interval, until ctx is canceled.
+func feedLoop(ctx context.Context, pullers []feeds.Puller, store *normalize.Store, interval, ttl time.Duration) {
+	pullAll(ctx, pullers, store, ttl)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pullAll(ctx, pullers, store, ttl)
+		}
+	}
+}
+
+// pullAll runs one refresh cycle. An error on one feed keeps that feed's
+// previous snapshot active and moves on: a provider outage must never
+// empty the blocklist or stall the other feeds' refresh.
+func pullAll(ctx context.Context, pullers []feeds.Puller, store *normalize.Store, ttl time.Duration) {
+	for _, p := range pullers {
+		items, err := p.Pull(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "r0-guard: feed %s refresh failed: %v (previous snapshot stays active)\n", p.Name(), err)
+			continue
+		}
+		now := time.Now()
+		iocs := normalize.Normalize(items, now, ttl)
+		store.Replace(p.Name(), iocs)
+		store.Prune(now)
+		fmt.Fprintf(os.Stderr, "r0-guard: feed %s: %d indicators, %d active in total\n",
+			p.Name(), len(iocs), store.Count(now))
 	}
 }
 

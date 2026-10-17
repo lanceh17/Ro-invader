@@ -152,6 +152,84 @@ func TestDecideEmptyGardenSuffixIgnored(t *testing.T) {
 	}
 }
 
+// --- threat-intel blocklist (Config.Blocked) -------------------------------
+
+func TestDecideBlockedNameForNXDomain(t *testing.T) {
+	c := Config{
+		Blocked: func(name string) bool { return name == "c2.evil.example" },
+	}
+	d := c.Decide("C2.Evil.Example.", false)
+	if d.Action != ActionNXDomain {
+		t.Errorf("uncontained + blocked = %v, want nxdomain", d.Action)
+	}
+	if d.Reason == "" {
+		t.Error("a blocked decision must carry a reason for the audit log")
+	}
+	if d := c.Decide("ordinary.example", false); d.Action != ActionForward {
+		t.Errorf("uncontained + unblocked = %v, want forward", d.Action)
+	}
+}
+
+func TestDecideNoBlockedHookForwards(t *testing.T) {
+	// A nil hook is the shipped default: fresh installs block nothing.
+	c := Config{}
+	if d := c.Decide("c2.evil.example", false); d.Action != ActionForward {
+		t.Errorf("nil Blocked = %v, want forward", d.Action)
+	}
+}
+
+func TestDecideBlockedNeverAppliesToContainedDevices(t *testing.T) {
+	c := Config{
+		Garden:  []string{"vendor.example"},
+		Blocked: func(string) bool { return true },
+	}
+	// Containment already answers non-garden names with the portal; the
+	// blocklist must not replace that notification with a bare NXDOMAIN.
+	if d := c.Decide("c2.evil.example", true); d.Action != ActionSinkhole {
+		t.Errorf("contained + blocked + non-garden = %v, want sinkhole", d.Action)
+	}
+	// And remediation outranks the blocklist: a garden name stays resolvable
+	// even when a feed also lists it, or the device could never be fixed.
+	if d := c.Decide("vendor.example", true); d.Action != ActionForward {
+		t.Errorf("contained + blocked + garden = %v, want forward", d.Action)
+	}
+}
+
+func TestDecideRootQueryBeatsBlocklist(t *testing.T) {
+	// The priming query has no name; a blocklist that claims everything
+	// still must not refuse it, or stubs break at startup.
+	c := Config{Blocked: func(string) bool { return true }}
+	if d := c.Decide("", false); d.Action != ActionForward {
+		t.Errorf("root query = %v, want forward", d.Action)
+	}
+}
+
+func TestHandleBlockedNameNeverReachesUpstream(t *testing.T) {
+	var called bool
+	var gotAction Action
+	s := testServer(t, Config{
+		Blocked: func(name string) bool { return name == "c2.evil.example" },
+		OnQuery: func(_ core.NormalizedEvent, a Action) { gotAction = a },
+	}, okForward(&called))
+
+	resp := s.Handle(buildQuery(t, "c2.evil.example", TypeA), testClient)
+	if called {
+		t.Fatal("a blocked name was forwarded to the upstream resolver")
+	}
+	if got := uint8(binary.BigEndian.Uint16(resp[2:4]) & 0x000F); got != RCodeNameErr {
+		t.Errorf("RCODE = %d, want NXDOMAIN", got)
+	}
+	if gotAction != ActionNXDomain {
+		t.Errorf("OnQuery action = %v, want nxdomain so the audit can record it", gotAction)
+	}
+
+	// The neighbour is unaffected: the predicate is name-based, not device.
+	s.Handle(buildQuery(t, "ordinary.example", TypeA), testClient)
+	if !called {
+		t.Error("an unblocked name must still forward")
+	}
+}
+
 // --- Handle path -----------------------------------------------------------
 
 func TestHandleMalformedReturnsFormErr(t *testing.T) {

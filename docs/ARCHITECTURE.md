@@ -85,7 +85,7 @@ agent/
     │   ├── opnsense/          REST: /api/firewall/filter/apply
     │   ├── vyos/              /configure with ipset groups
     │   └── openwrt/           firewall4 nftables sets + uci + ubus
-    ├── feeds/                 feed pullers (ThreatFox, URLhaus, KEV, SSLBL)
+    ├── feeds/                 feed pullers (ThreatFox, URLhaus, KEV)
     └── portal/                remediation UI + release endpoint
 ```
 

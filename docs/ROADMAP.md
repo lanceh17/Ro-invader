@@ -12,8 +12,8 @@ The shippable product. Everything needed to observe a network, score devices, an
 
 - [x] `core` types: `Device`, `NormalizedEvent`, `Signal`, `Policy`, `ContainmentState`
 - [x] DNS resolver (with query logging, per-device policy decisions, and walled-garden sinkholes — `serve`)
-- [ ] Feed pullers: ThreatFox, URLhaus, CISA KEV, SSLBL
-- [ ] Normalization with confidence, TTL, and IoT-relevant tagging
+- [x] Feed pullers: ThreatFox, URLhaus, CISA KEV (SSLBL struck — its botnet C2 IP blacklist was deprecated by abuse.ch on 2025-01-03)
+- [x] Normalization with confidence, TTL, and provenance tagging
 - [ ] Inventory ingest from all three router backends
 - [ ] IEEE OUI vendor lookup
 - [x] Per-device risk scoring with exponential decay

@@ -73,6 +73,13 @@ type Config struct {
 	// permanently.
 	Garden []string
 
+	// Blocked reports whether name matches an active threat-intel indicator
+	// and must not be resolved for an uncontained device. It is injected
+	// rather than owned, like Quarantined: the indicator store lives in the
+	// policy layer, not here. Nil means no blocklist, which is the safe
+	// default — blocking is opt-in, exactly as containment is.
+	Blocked func(name string) bool
+
 	// Quarantined reports whether the device at ip is currently contained.
 	// It is injected rather than owned, because containment state lives in
 	// the risk engine and the actuator, not here.
@@ -152,8 +159,21 @@ func (c Config) Decide(name string, quarantined bool) Decision {
 	}
 
 	if !quarantined {
-		// Uncontained devices resolve freely. Blocklists are the operator's
-		// to configure; none is the safe default.
+		// Uncontained devices resolve freely except for names the operator's
+		// feeds have marked as known-bad. With no blocklist configured —
+		// the default — nothing here can act, which keeps a fresh install
+		// strictly observe-only on this path too.
+		//
+		// Contained devices never reach this branch: containment has
+		// already answered their non-garden queries with the portal, and a
+		// contained device resolving a garden name keeps the exception
+		// below, because remediation outranks a blocklist hit.
+		if c.Blocked != nil && c.Blocked(name) {
+			return Decision{
+				Action: ActionNXDomain,
+				Reason: "name matches an active threat-intel indicator",
+			}
+		}
 		return Decision{Action: ActionForward, Reason: "device not contained"}
 	}
 

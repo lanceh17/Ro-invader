@@ -14,6 +14,7 @@ Why it is structural rather than configurable:
 
 - The actuator interface exposes no operation that reaches a target host. Its verbs are `Authoritative`, `Quarantine`, `Release`, `BlockNet`, `BlockDomain`, and `Health`. None of them transmit to a managed device.
 - The sensing path is entirely reactive: DNS queries arriving at our resolver, flow records emitted by the router, and inventory state pushed by the router's own API.
+- The one outbound request the control plane makes is fetching the threat-intel feeds named in section 4, and it is the only exception to the rule above. It is addressed solely to those named providers, carries nothing derived from a managed host, and runs only when `-feeds` enables it: a website request like any browser's, never a packet aimed at anything on the managed network.
 - There is no code path that generates a network request on behalf of a scanned host.
 
 A tool that actively scans creates ambiguity under laws such as the U.S. Computer Fraud and Abuse Act, even when the scanned network is your own, because the scanner's behavior is indistinguishable from an attacker's once it leaves your machine. Passive-only eliminates that question rather than arguing it. It also removes the failure mode of a scanner breaking a fragile embedded device, which is a real and common operational hazard on networks with IoT hardware.
@@ -61,7 +62,8 @@ R0-Invader is Apache-2.0. It consumes several GPL-licensed tools, and the bounda
 - `hagezi/dns-blocklists` and `AdGuardSDNSFilter` are GPL-3.0. Prefer raw upstream feeds over GPL-licensed aggregators, since the legal status of blocklist *data* under copyright is unsettled but a careful reviewer will argue the point.
 - **Spamhaus free-tier DBL is restricted to home and non-commercial use.** Commercial redistribution requires a DQS subscription. If you are packaging R0-Invader for sale, this feed is not available to you on free terms.
 - **abuse.ch's Feodo Tracker is empty** as of Operation Endgame. Do not build on it.
-- abuse.ch now requires an API key for ThreatFox. Read it from the `R0_THREATFOX_KEY` environment variable; never hardcode it.
+- **abuse.ch's SSLBL Botnet C2 IP blacklist was deprecated on 2025-01-03** (the feed itself says so). Do not build on it; SSLBL's live products are certificate and JA3 feeds, which are not DNS-addressable indicators.
+- abuse.ch now requires an API key for both ThreatFox and URLhaus. Read it from the `R0_ABUSECH_KEY` environment variable (falling back to `R0_THREATFOX_KEY`, which this document previously named); never hardcode it.
 
 ---
 
