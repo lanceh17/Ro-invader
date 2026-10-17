@@ -19,9 +19,9 @@ import (
 	"time"
 
 	"github.com/lanceh17/Ro-invader/agent/internal/act"
-	"github.com/lanceh17/Ro-invader/agent/internal/detect"
 	"github.com/lanceh17/Ro-invader/agent/internal/ingest/suricata"
 	"github.com/lanceh17/Ro-invader/agent/internal/inventory"
+	"github.com/lanceh17/Ro-invader/agent/internal/pipeline"
 	"github.com/lanceh17/Ro-invader/agent/internal/risk"
 )
 
@@ -135,25 +135,21 @@ func runAnalyze(args []string) error {
 		return fmt.Errorf("analyze: reading %s: %w", *evePath, err)
 	}
 
-	// Run every detector over every event and feed the resulting signals into
-	// the risk engine. Detectors are pure functions, so this loop is the only
-	// place the pipeline has any side effects: it mutates the engine.
+	// The pipeline is the single connection from events to scoring: it
+	// attributes (already done here by Suricata, so it is preserved), runs the
+	// detectors, and observes the engine. The inline loop this replaces is the
+	// same one the DNS resolver path uses, so both paths are now identical
+	// rather than merely similar.
+	//
 	// WithHalfLife, not WithConfig: the latter takes a full Config, and a
 	// partial one would zero out RequireCorroboration and let a single
 	// signal escalate a device. That is the opposite of what this tool is
 	// for.
 	engine := risk.New(risk.WithHalfLife(*halfLife))
-	detectors := detect.All()
-
-	var signals int
-	for _, ev := range events {
-		for _, d := range detectors {
-			for _, s := range d.Evaluate(ev) {
-				engine.Observe(s, ev.Time)
-				signals++
-			}
-		}
-	}
+	pipe := pipeline.New(attributor, engine)
+	fired := pipe.IngestAll(events)
+	signals := len(fired)
+	detectors := pipe.Detectors()
 
 	fmt.Printf("eve: %s\n", *evePath)
 	fmt.Printf("events: %d normalized\n", len(events))
@@ -167,7 +163,23 @@ func runAnalyze(args []string) error {
 		return nil
 	}
 
-	ranked := engine.Ranked(inv.Devices(), time.Time{})
+	// Score against the capture's own end, not wall-clock now.
+	//
+	// The engine decays each signal toward the evaluation time, so evaluating
+	// at time.Now() would make this command non-reproducible: the same EVE
+	// file returns a different score on every run as real time passes its
+	// fixed timestamps, and an old log would report every signal already
+	// decayed to nothing. The question an analysis of a captured log asks is
+	// "what did this look like," which is answered at the end of the capture.
+	// The live daemon, when it exists, will score against now -- that is its
+	// job. This is only the batch reader.
+	captureEnd := time.Time{}
+	for _, ev := range events {
+		if ev.Time.After(captureEnd) {
+			captureEnd = ev.Time
+		}
+	}
+	ranked := engine.Ranked(inv.Devices(), captureEnd)
 	if len(ranked) == 0 {
 		fmt.Println("no device scored above zero; nothing to report")
 		return nil

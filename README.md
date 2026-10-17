@@ -166,14 +166,16 @@ Sample output:
 ```
 events: 6 normalized
 inventory: 3 devices
-signals: 4 from 1 detectors
+signals: 4 from 2 detectors
 
-aa:bb:cc:dd:ee:01  score=51.7   tier=monitor uncorroborated(1 kinds)
-    - device contacted a model-hosting endpoint (cdn-lfs.huggingface.co) (score 17.2)
+aa:bb:cc:dd:ee:01  score=54.0   tier=monitor uncorroborated(1 kinds)
+    - device contacted a model-hosting endpoint (cdn-lfs.huggingface.co) (score 18.0)
     vendor: Hikvision  class: camera
 ```
 
 Note the last line: the camera scores above the `restrict` threshold (30) but is held at `monitor` because only one signal kind fired. Corroboration is required by default, so a single finding — however large — never contains a device. That is the project's central safety property, and it is the first thing to verify after any change to the risk engine.
+
+The score above is reproducible: `analyze` evaluates each signal at the capture's own end rather than at the moment you run it, so the same EVE file always yields the same report. Re-running it against a modified or newer capture is what changes the number.
 
 The inventory file maps IPs to MACs and device classes; without it, events cannot be attributed and no signal can name a device. See [docs/ROADMAP.md](docs/ROADMAP.md) for what ships next.
 

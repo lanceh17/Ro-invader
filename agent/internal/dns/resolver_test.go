@@ -8,6 +8,10 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/lanceh17/Ro-invader/agent/internal/core"
+	"github.com/lanceh17/Ro-invader/agent/internal/detect"
+	"github.com/lanceh17/Ro-invader/agent/internal/pipeline"
 )
 
 var (
@@ -251,20 +255,88 @@ func TestHandleUpstreamFailureReturnsServFail(t *testing.T) {
 }
 
 func TestHandleOnQueryCallback(t *testing.T) {
-	var gotSrc netip.Addr
-	var gotName string
+	var gotEv core.NormalizedEvent
 	var gotAction Action
 	s := testServer(t, Config{
 		Quarantined: func(ip netip.Addr) bool { return ip == testClient },
-		OnQuery: func(src netip.Addr, name string, a Action) {
-			gotSrc, gotName, gotAction = src, name, a
+		OnQuery: func(ev core.NormalizedEvent, a Action) {
+			gotEv, gotAction = ev, a
 		},
 	}, nil)
 
 	s.Handle(buildQuery(t, "cdn-lfs.huggingface.co", TypeA), testClient)
-	if gotSrc != testClient || gotName != "cdn-lfs.huggingface.co" || gotAction != ActionSinkhole {
-		t.Errorf("OnQuery = (%v, %q, %v), want (%v, cdn-lfs.huggingface.co, sinkhole)",
-			gotSrc, gotName, gotAction, testClient)
+
+	if gotAction != ActionSinkhole {
+		t.Errorf("action = %v, want sinkhole", gotAction)
+	}
+	if gotEv.Kind != core.EventDNSQuery {
+		t.Errorf("Kind = %v, want EventDNSQuery", gotEv.Kind)
+	}
+	if gotEv.Src.IP != testClient {
+		t.Errorf("Src.IP = %v, want %v", gotEv.Src.IP, testClient)
+	}
+	if gotEv.QueryName != "cdn-lfs.huggingface.co" {
+		t.Errorf("QueryName = %q, want cdn-lfs.huggingface.co", gotEv.QueryName)
+	}
+	if gotEv.Dst.Host != "cdn-lfs.huggingface.co" {
+		t.Errorf("Dst.Host = %q, want the queried name", gotEv.Dst.Host)
+	}
+	// The event must carry a real time, because the risk engine's decay keys
+	// off it. A zero time would silently fall back to the engine's clock.
+	if gotEv.Time.IsZero() {
+		t.Error("event Time is zero; the timestamp must be stamped here")
+	}
+	// Attribution is the pipeline's job: the resolver knows an IP, not the
+	// inventory. DeviceMAC must be left empty for the pipeline to fill.
+	if len(gotEv.DeviceMAC) != 0 {
+		t.Errorf("DeviceMAC = %v, want empty; the resolver does not hold the inventory", gotEv.DeviceMAC)
+	}
+}
+
+// TestOnQueryEventFeedsThePipeline is the end-to-end wiring this slice exists
+// for: a query arriving at the resolver becomes an event, which the pipeline
+// attributes and scores, with no Suricata anywhere in the path.
+func TestOnQueryEventFeedsThePipeline(t *testing.T) {
+	// The resolver hands the pipeline an unattributed event carrying only the
+	// source IP; the pipeline's attributor maps that IP to the device.
+	invMAC := net.HardwareAddr{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x50}
+	attr := pipeline.MapAttributor{testClient: invMAC}
+
+	// Low baseline so a single first contact exercises R7.
+	pipe := pipeline.New(attr, nil, detect.NewDNSDriftDetector(1, nil))
+
+	var captured []core.NormalizedEvent
+	s := testServer(t, Config{
+		OnQuery: func(ev core.NormalizedEvent, _ Action) { captured = append(captured, ev) },
+	}, okForward(nil))
+
+	// Two queries: one ordinary to establish baseline, one to a watched domain.
+	s.Handle(buildQuery(t, "ordinary.example", TypeA), testClient)
+	s.Handle(buildQuery(t, "cdn-lfs.huggingface.co", TypeA), testClient)
+
+	if len(captured) != 2 {
+		t.Fatalf("captured %d events, want 2", len(captured))
+	}
+
+	var fired []core.Signal
+	for _, ev := range captured {
+		fired = append(fired, pipe.Ingest(ev)...)
+	}
+
+	if len(fired) != 1 {
+		t.Fatalf("pipeline fired %d signals, want 1 (the first model-host contact)", len(fired))
+	}
+	if fired[0].Kind != core.SignalDNSDrift {
+		t.Errorf("Kind = %v, want SignalDNSDrift", fired[0].Kind)
+	}
+	if fired[0].DeviceMAC.String() != invMAC.String() {
+		t.Errorf("attributed to %v, want %v (via the pipeline, not the resolver)", fired[0].DeviceMAC, invMAC)
+	}
+
+	// And the engine must hold it.
+	dev := core.Device{MAC: invMAC, Class: core.ClassCamera}
+	if a := pipe.Engine().Evaluate(dev, captured[1].Time); a.Score <= 0 {
+		t.Errorf("engine score = %v; the DNS signal never reached scoring", a.Score)
 	}
 }
 
@@ -285,8 +357,8 @@ func TestListenAndServeRoundTrip(t *testing.T) {
 		// source. The point of this test is the socket round trip, and the
 		// per-device keying is covered by TestHandleQuarantineIsPerDevice.
 		Quarantined: func(netip.Addr) bool { return true },
-		OnQuery: func(src netip.Addr, name string, _ Action) {
-			gotSrc, gotName = src, name
+		OnQuery: func(ev core.NormalizedEvent, _ Action) {
+			gotSrc, gotName = ev.Src.IP, ev.QueryName
 		},
 		Ready: func(a net.Addr) { ready <- a },
 	}, okForward(nil))

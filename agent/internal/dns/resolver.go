@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/lanceh17/Ro-invader/agent/internal/core"
 )
 
 // Action is what the resolver does with an accepted query.
@@ -76,14 +78,22 @@ type Config struct {
 	// the risk engine and the actuator, not here.
 	Quarantined func(ip netip.Addr) bool
 
-	// OnQuery, when non-nil, is called for every accepted query. It is the
-	// seam through which queries become NormalizedEvents and feed the
-	// detection pipeline: the resolver is the identity source, and this is
-	// how that identity reaches the detectors.
-	OnQuery func(source netip.Addr, name string, action Action)
+	// OnQuery, when non-nil, is called for every accepted query with the
+	// normalized event describing it and the policy action taken. It is the
+	// seam through which queries reach the detection pipeline: the resolver is
+	// the identity source for passive-only operation, and this is how that
+	// identity becomes telemetry the detectors can score. Attribution to a MAC
+	// is deliberately NOT done here — the resolver has a source IP, not the
+	// inventory — and is left to the pipeline that consumes the event.
+	OnQuery func(ev core.NormalizedEvent, action Action)
 
 	// Timeout bounds one upstream round trip. Zero uses the default.
 	Timeout time.Duration
+
+	// Now supplies event timestamps. Nil means time.Now. It is injectable so
+	// a test can produce deterministic event times for decay, and so that
+	// Handle's clock use stays explicit rather than hidden in time.Now.
+	Now func() time.Time
 
 	// Ready, when non-nil, is called once the socket is bound, with the
 	// actual address. It exists so tests (and a supervisor that wants the
@@ -112,6 +122,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 3 * time.Second
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
 	s := &Server{cfg: cfg}
 	s.forward = s.upstreamForward
@@ -203,7 +216,16 @@ func (s *Server) Handle(payload []byte, source netip.Addr) []byte {
 	decision := s.cfg.Decide(question.Name, quarantined)
 
 	if s.cfg.OnQuery != nil {
-		s.cfg.OnQuery(source, question.Name, decision.Action)
+		// Build the event the pipeline consumes. It carries the source IP but
+		// no DeviceMAC: attribution is the pipeline's job, because only it
+		// holds the inventory that maps an address to a device.
+		s.cfg.OnQuery(core.NormalizedEvent{
+			Time:      s.cfg.Now(),
+			Kind:      core.EventDNSQuery,
+			Src:       core.Endpoint{IP: source},
+			Dst:       core.Endpoint{Host: question.Name},
+			QueryName: question.Name,
+		}, decision.Action)
 	}
 
 	switch decision.Action {

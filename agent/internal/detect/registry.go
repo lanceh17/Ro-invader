@@ -14,5 +14,9 @@ import "github.com/lanceh17/Ro-invader/agent/internal/core"
 func All() []core.Detector {
 	return []core.Detector{
 		NewModelHostDetector(nil),
+		// R7 carries its own baseline state (see DNSDriftDetector), which is
+		// why it is constructed here rather than being a package-level
+		// singleton: each caller gets an independent baseline.
+		NewDNSDriftDetector(0, nil),
 	}
 }
