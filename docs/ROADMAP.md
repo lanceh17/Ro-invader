@@ -10,15 +10,15 @@ The containment core is justified by Mirai-class botnets, which still infect mil
 
 The shippable product. Everything needed to observe a network, score devices, and contain them, with no AI-specific detection at all.
 
-- [ ] `core` types: `Device`, `NormalizedEvent`, `Signal`, `Policy`, `ContainmentState`
-- [ ] DNS resolver (authoritative, with query logging and walled-garden resolution)
+- [x] `core` types: `Device`, `NormalizedEvent`, `Signal`, `Policy`, `ContainmentState`
+- [x] DNS resolver (with query logging, per-device policy decisions, and walled-garden sinkholes — `serve`)
 - [ ] Feed pullers: ThreatFox, URLhaus, CISA KEV, SSLBL
 - [ ] Normalization with confidence, TTL, and IoT-relevant tagging
 - [ ] Inventory ingest from all three router backends
 - [ ] IEEE OUI vendor lookup
-- [ ] Per-device risk scoring with exponential decay
-- [ ] Policy tier selection with corroboration requirement
-- [ ] Actuator interface + OpenWrt adapter
+- [x] Per-device risk scoring with exponential decay
+- [x] Policy tier selection with corroboration requirement
+- [x] Actuator interface + OpenWrt adapter
 - [ ] Actuator adapter + VyOS adapter
 - [ ] Actuator adapter + OPNsense adapter
 - [ ] Remediation portal with per-device reason codes and release action
@@ -35,15 +35,15 @@ The shippable product. Everything needed to observe a network, score devices, an
 The nine signals in [DETECTION.md](DETECTION.md), each as a pure function with fixtures and a suppression mechanism.
 
 - [ ] R1 large transfer to model host
-- [ ] R2 model-host SNI on IoT-class device
+- [x] R2 model-host SNI on IoT-class device
 - [ ] R3 inference engine signature on non-server device
 - [ ] R4 sustained east-west peer volume
 - [ ] R5 port-scan burst from LAN host
 - [ ] R6 authentication fan-out with credential reuse
-- [ ] R7 device DNS baseline deviation
+- [x] R7 device DNS baseline deviation
 - [ ] R8 new device appearance (inventory transition)
 - [ ] R9 periodic beaconing on non-standard port
-- [ ] Per-device baseline accumulation and drift
+- [x] Per-device baseline accumulation and drift
 - [ ] Per-vendor suppression allowlists
 - [ ] Detection fixture corpus from published signatures
 

@@ -148,7 +148,9 @@ Runs on a Raspberry Pi 5, a mini-PC, or alongside an existing router appliance. 
 
 ## Quickstart
 
-The detection half runs today. `analyze` reads a Suricata EVE file, attributes events to devices, runs the detectors, and scores each device with exponential decay — reporting the containment tier it would recommend. It reads and reports only; it never contacts a router or a device.
+The detection half runs today.
+
+`analyze` reads a Suricata EVE file, attributes events to devices, runs the detectors, and scores each device with exponential decay — reporting the containment tier it would recommend. It reads and reports only; it never contacts a router or a device.
 
 ```bash
 git clone https://github.com/lanceh17/Ro-invader.git
@@ -178,6 +180,21 @@ Note the last line: the camera scores above the `restrict` threshold (30) but is
 The score above is reproducible: `analyze` evaluates each signal at the capture's own end rather than at the moment you run it, so the same EVE file always yields the same report. Re-running it against a modified or newer capture is what changes the number.
 
 The inventory file maps IPs to MACs and device classes; without it, events cannot be attributed and no signal can name a device. See [docs/ROADMAP.md](docs/ROADMAP.md) for what ships next.
+
+`serve` runs the same pipeline live on DNS traffic. Queries are attributed from the inventory, scored as they arrive, and a device that reaches the quarantine tier has its lookups answered with the remediation portal — a walled garden rather than a cut-off, so a contained device can still reach its vendor's patch server. Nothing else is actuated, and the engine's corroboration rule still gates everything: a single signal never contains anything.
+
+```bash
+# Try it without root: high port, and -observe guarantees it never sinkholes
+./r0-guard serve \
+  -listen 127.0.0.1:5353 \
+  -portal 192.168.1.99 \
+  -inventory tests/fixtures/inventory.json \
+  -observe
+
+# A real deployment runs as the network's resolver (DHCP option 6) without
+# -observe, so the risk engine's tiers are enforced as queries arrive:
+#   sudo ./r0-guard serve -portal 192.168.1.99 -inventory inventory.json
+```
 
 Read [THREAT_MODEL.md](THREAT_MODEL.md) to check whether this tool addresses the threat you actually face. If your concern is the existing Mirai-class botnets, the containment core is directly useful today. If your concern is the AI replicator specifically, the honest answer is that the detectors are forward-looking and the containment is the part that does real work.
 
