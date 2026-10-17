@@ -8,6 +8,7 @@ import (
 
 	"github.com/lanceh17/Ro-invader/agent/internal/core"
 	"github.com/lanceh17/Ro-invader/agent/internal/inventory"
+	"github.com/lanceh17/Ro-invader/agent/internal/portal"
 	"github.com/lanceh17/Ro-invader/agent/internal/risk"
 )
 
@@ -42,7 +43,7 @@ func mkSignal(kind core.SignalKind, cls core.SignalClass, w, c float64) core.Sig
 // unknown device would be acting on a guess.
 func TestQuarantineFuncUnknownIPIsNotContained(t *testing.T) {
 	inv := testInventory(t)
-	qf := quarantineFunc(inv, risk.New())
+	qf := quarantineFunc(inv, risk.New(), nil)
 	if qf(netip.MustParseAddr("192.168.1.99")) {
 		t.Error("an unknown IP was contained")
 	}
@@ -50,11 +51,11 @@ func TestQuarantineFuncUnknownIPIsNotContained(t *testing.T) {
 
 func TestQuarantineFuncNilInputsAreNotContained(t *testing.T) {
 	inv := testInventory(t)
-	qf := quarantineFunc(nil, risk.New())
+	qf := quarantineFunc(nil, risk.New(), nil)
 	if qf(netip.MustParseAddr(testDeviceIP)) {
 		t.Error("nil inventory must not contain")
 	}
-	qf = quarantineFunc(inv, nil)
+	qf = quarantineFunc(inv, nil, nil)
 	if qf(netip.MustParseAddr(testDeviceIP)) {
 		t.Error("nil engine must not contain")
 	}
@@ -82,7 +83,7 @@ func TestQuarantineFuncContainsCorroboratedDevice(t *testing.T) {
 		t.Fatalf("fixture device tier = %v, want quarantined", tier)
 	}
 
-	qf := quarantineFunc(inv, eng)
+	qf := quarantineFunc(inv, eng, nil)
 	if !qf(netip.MustParseAddr(testDeviceIP)) {
 		t.Error("a corroborated, over-threshold device was not contained")
 	}
@@ -111,7 +112,7 @@ func TestQuarantineFuncSingleKindNeverContains(t *testing.T) {
 		t.Fatalf("DistinctKinds = %d, want 1", a.DistinctKinds)
 	}
 
-	qf := quarantineFunc(inv, eng)
+	qf := quarantineFunc(inv, eng, nil)
 	if qf(netip.MustParseAddr(testDeviceIP)) {
 		t.Error("a single signal kind was contained despite a high score; corroboration must gate containment")
 	}
@@ -120,4 +121,47 @@ func TestQuarantineFuncSingleKindNeverContains(t *testing.T) {
 func withMAC(s core.Signal, mac net.HardwareAddr) core.Signal {
 	s.DeviceMAC = mac
 	return s
+}
+
+// testClock is a manually advanced clock for expiry tests.
+type testClock struct{ t time.Time }
+
+func (c *testClock) now() time.Time { return c.t }
+
+// TestQuarantineFuncReleasedDeviceIsNotContained: an operator's time-boxed
+// release overrides containment for exactly its duration; when it lapses the
+// engine's tier applies again by itself, with no one acting on it. This is
+// the SAFETY.md guarantee "reversible by a human, always" in both directions
+// -- reversible, but not permanent.
+func TestQuarantineFuncReleasedDeviceIsNotContained(t *testing.T) {
+	inv := testInventory(t)
+	mac := testMAC(t)
+	eng := risk.New()
+	now := time.Now()
+	for i := 0; i < 3; i++ {
+		eng.Observe(withMAC(mkSignal(core.SignalModelHostOnIoT, core.SignalReplicationRequired, 20, 0.6), mac), now)
+		eng.Observe(withMAC(mkSignal(core.SignalDNSDrift, core.SignalReplicationRequired, 25, 0.5), mac), now)
+	}
+
+	clk := &testClock{t: now}
+	exc, err := portal.NewExceptions("", clk.now)
+	if err != nil {
+		t.Fatalf("NewExceptions: %v", err)
+	}
+	ip := netip.MustParseAddr(testDeviceIP)
+
+	qf := quarantineFunc(inv, eng, exc)
+	if !qf(ip) {
+		t.Fatal("precondition: fixture device is not contained")
+	}
+	if _, err := exc.Release(mac, "test", time.Hour); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if qf(ip) {
+		t.Error("a released device is still contained")
+	}
+	clk.t = clk.t.Add(2 * time.Hour)
+	if !qf(ip) {
+		t.Error("an expired release did not re-contain the device")
+	}
 }

@@ -7,10 +7,13 @@
 //     containment tier. It reads and reports only.
 //   - `serve` runs the DNS resolver wired to that same pipeline: queries are
 //     attributed, scored, and a device whose assessment reaches the quarantine
-//     tier has its lookups answered with the remediation portal. That walled
-//     garden is the one containment action this binary takes, and it is gated
-//     by the risk engine's corroboration rule, so it reaches only devices that
-//     crossed the published threshold.
+//     tier has its lookups answered with the remediation portal, served by
+//     this same command. The portal explains the quarantine, carries cleanup
+//     guidance, and offers release behind an operator token; every release
+//     is time-boxed and every decision and release is written to an
+//     append-only audit log. That walled garden is the one containment action
+//     this binary takes, and it is gated by the risk engine's corroboration
+//     rule, so it reaches only devices that crossed the published threshold.
 //
 // Pushing firewall rules to a router is still in progress; see
 // docs/ROADMAP.md. Nothing here contacts a managed device directly.
@@ -21,9 +24,13 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
@@ -37,6 +44,7 @@ import (
 	"github.com/lanceh17/Ro-invader/agent/internal/ingest/suricata"
 	"github.com/lanceh17/Ro-invader/agent/internal/inventory"
 	"github.com/lanceh17/Ro-invader/agent/internal/pipeline"
+	"github.com/lanceh17/Ro-invader/agent/internal/portal"
 	"github.com/lanceh17/Ro-invader/agent/internal/risk"
 )
 
@@ -69,11 +77,18 @@ Serve flags:
   -half-life <dur>     Risk score decay half-life (default 72h)
   -report <dur>        interval between assessment reports; 0 disables (default 30s)
   -observe             score and report only: never sinkhole, regardless of tier
+  -portal-http <addr>  portal HTTP listen address (default :80); empty disables
+  -portal-token <tok>  operator token that releases devices (default: random)
+  -release-ttl <dur>   how long one release lasts before re-containing (default 24h)
+  -state <path>        persisted release store (default r0-guard-state.json)
+  -audit <path>        action audit log, JSON Lines (default r0-guard-audit.jsonl)
+  -remediation <path>  JSON map of vendor name to portal cleanup steps
 
 Status:
   v0.1 containment core is in progress. analyze is read-only. serve runs the
-  resolver and applies the walled garden to quarantined devices, but does not
-  yet push firewall rules to a router. See docs/ROADMAP.md.
+  resolver, applies the walled garden to quarantined devices, and serves the
+  remediation portal with token-gated, audited releases, but does not yet push
+  firewall rules to a router. See docs/ROADMAP.md.
 
 This tool is passive by architecture: it never probes, scans, or transmits
 to a managed device. See SAFETY.md.
@@ -239,22 +254,28 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	listen := fs.String("listen", ":53", "UDP address to resolve on")
 	upstream := fs.String("upstream", "8.8.8.8:53", "upstream resolver to forward to")
-	portal := fs.String("portal", "", "remediation-portal address sinkholes point at")
+	portalIP := fs.String("portal", "", "remediation-portal address sinkholes point at")
 	garden := fs.String("garden", "", "comma-separated domains a quarantined device may still reach")
 	invPath := fs.String("inventory", "", "JSON device inventory for attribution and classification")
 	halfLife := fs.Duration("half-life", 72*time.Hour, "risk score decay half-life")
 	reportEvery := fs.Duration("report", 30*time.Second, "interval between assessment reports; 0 disables")
 	observe := fs.Bool("observe", false, "score and report only: never sinkhole")
+	portalHTTP := fs.String("portal-http", ":80", "portal HTTP listen address; empty disables the portal")
+	portalToken := fs.String("portal-token", "", "operator token that releases devices; empty generates a random one")
+	releaseTTL := fs.Duration("release-ttl", 24*time.Hour, "how long one release lasts before the device is contained again")
+	statePath := fs.String("state", "r0-guard-state.json", "persisted release store")
+	auditPath := fs.String("audit", "r0-guard-audit.jsonl", "action audit log, one JSON object per line")
+	remediationPath := fs.String("remediation", "", "JSON map of vendor name to portal cleanup steps")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *portal == "" {
+	if *portalIP == "" {
 		return fmt.Errorf("serve: -portal is required\n\n%s", usage)
 	}
-	portalAddr, err := netip.ParseAddr(*portal)
+	portalAddr, err := netip.ParseAddr(*portalIP)
 	if err != nil {
-		return fmt.Errorf("serve: -portal %q: %w", *portal, err)
+		return fmt.Errorf("serve: -portal %q: %w", *portalIP, err)
 	}
 
 	// Load the inventory before binding. Without it nothing can be attributed,
@@ -281,6 +302,27 @@ func runServe(args []string) error {
 		}
 	}
 
+	// The release store refuses to start on malformed state rather than
+	// skipping it: a state file we cannot parse means releases we cannot
+	// honor, and continuing would silently re-contain devices the operator
+	// already freed. The audit log is opened lazily by its own type, so runs
+	// that never contain anything leave no files behind.
+	exceptions, err := portal.NewExceptions(*statePath, nil)
+	if err != nil {
+		return err
+	}
+	auditLog := portal.NewAudit(*auditPath, nil)
+	defer auditLog.Close()
+
+	remediation, err := loadRemediation(*remediationPath)
+	if err != nil {
+		return err
+	}
+	token, err := releaseToken(*portalToken)
+	if err != nil {
+		return err
+	}
+
 	engine := risk.New(risk.WithHalfLife(*halfLife))
 	pipe := pipeline.New(attr, engine)
 
@@ -288,9 +330,43 @@ func runServe(args []string) error {
 	// command owns, so there is exactly one source of truth for a device's
 	// tier. -observe overrides it entirely rather than adjusting a threshold,
 	// because "never contain" should not depend on getting a number right.
-	quarantined := quarantineFunc(inv, engine)
+	// The release store sits inside the predicate: a released device is
+	// contained by no one until its time box runs out.
+	quarantined := quarantineFunc(inv, engine, exceptions)
 	if *observe {
 		quarantined = func(netip.Addr) bool { return false }
+	}
+
+	// The portal binds before the resolver does: a permission error on :80
+	// should stop the run before :53 is taken, and a run whose sinkholes
+	// point at an address nobody answers would strand every contained device
+	// on a dead page.
+	var portalSrv *http.Server
+	var portalErrc chan error
+	if *portalHTTP != "" {
+		ps, err := portal.New(portal.Config{
+			Engine:      engine,
+			Inventory:   inv,
+			Garden:      gardenDomains,
+			Remediation: remediation,
+			Exceptions:  exceptions,
+			Audit:       auditLog,
+			Token:       token,
+			ReleaseTTL:  *releaseTTL,
+			ReadOnly:    *observe,
+		})
+		if err != nil {
+			return err
+		}
+		ln, err := net.Listen("tcp", *portalHTTP)
+		if err != nil {
+			return fmt.Errorf("serve: portal http on %s: %w (change with -portal-http)", *portalHTTP, err)
+		}
+		portalSrv = &http.Server{Handler: ps.Handler()}
+		portalErrc = make(chan error, 1)
+		go func() { portalErrc <- portalSrv.Serve(ln) }()
+		fmt.Fprintf(os.Stderr, "r0-guard: portal on %s (listening on %s)\n", deviceFacingURL(portalAddr, ln.Addr()), ln.Addr())
+		fmt.Fprintf(os.Stderr, "r0-guard: portal release token: %s\n", token)
 	}
 
 	// Discover the bound address (the real port when -listen uses :0) and
@@ -304,13 +380,18 @@ func runServe(args []string) error {
 		Garden:      gardenDomains,
 		Quarantined: quarantined,
 		OnQuery: func(ev core.NormalizedEvent, action dns.Action) {
-			pipe.Ingest(ev)
-			// Only sinkholes are logged. Forwarded queries are every lookup
-			// on the network; printing them would bury the one line that
-			// matters when a device is actually contained.
+			// The sinkhole record is written before Ingest: Handle decided
+			// from the engine state as it stood before this query was
+			// observed, so evaluating now reproduces the decision's own
+			// score, not one this query has already moved.
 			if action == dns.ActionSinkhole {
+				recordSinkhole(auditLog, inv, engine, ev)
+				// Only sinkholes are logged. Forwarded queries are every
+				// lookup on the network; printing them would bury the one
+				// line that matters when a device is actually contained.
 				fmt.Fprintf(os.Stderr, "r0-guard: sinkholed %s for %s\n", ev.QueryName, ev.Src.IP)
 			}
+			pipe.Ingest(ev)
 		},
 		Ready: func(a net.Addr) { ready <- a },
 	})
@@ -321,6 +402,8 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// portalErrc stays nil when the portal is disabled; a nil channel in a
+	// select blocks forever, which is exactly right.
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe(ctx) }()
 
@@ -329,6 +412,8 @@ func runServe(args []string) error {
 		fmt.Fprintf(os.Stderr, "r0-guard: resolving on %s (forwarding to %s)\n", addr, *upstream)
 	case err := <-errc:
 		return err
+	case err := <-portalErrc:
+		return fmt.Errorf("serve: portal: %w", err)
 	}
 
 	if *reportEvery > 0 {
@@ -349,6 +434,10 @@ func runServe(args []string) error {
 	select {
 	case err := <-errc:
 		return err
+	case err := <-portalErrc:
+		// Serve never returns nil on its own: only our own Shutdown below
+		// makes it exit, and that path does not come through this case.
+		return fmt.Errorf("serve: portal: %w", err)
 	case <-ctx.Done():
 		// ListenAndServe closes its socket on cancellation and returns nil.
 		if err := <-errc; err != nil {
@@ -356,19 +445,34 @@ func runServe(args []string) error {
 		}
 	}
 
+	// Shut the portal down after the resolver has drained, with a bound so a
+	// browser holding the connection open cannot hold the process open; the
+	// Close below is the forcing function.
+	if portalSrv != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := portalSrv.Shutdown(shutdownCtx); err != nil {
+			portalSrv.Close()
+		}
+		<-portalErrc // the Serve goroutine finishes here
+	}
+
 	printReport(pipe, inv)
 	return nil
 }
 
 // quarantineFunc is the resolver's containment predicate: a device is contained
-// when its current assessment tier is quarantine.
+// when its current assessment tier is quarantine and no active release says
+// otherwise.
 //
 // It consults the risk engine rather than tracking a separate containment flag,
 // because two sources of truth for a device's tier would eventually disagree
 // during an incident. A device that has not crossed the engine's corroboration-
 // gated quarantine threshold is never contained, which is what keeps a single
-// signal -- however large -- from sinkholing anything.
-func quarantineFunc(inv *inventory.Inventory, eng *risk.Engine) func(netip.Addr) bool {
+// signal -- however large -- from sinkholing anything. The release store is the
+// one documented override: an operator's time-boxed decision to let a specific
+// device back on, checked on every query so it expires by itself.
+func quarantineFunc(inv *inventory.Inventory, eng *risk.Engine, exc *portal.Exceptions) func(netip.Addr) bool {
 	return func(ip netip.Addr) bool {
 		if inv == nil || eng == nil {
 			return false
@@ -377,12 +481,94 @@ func quarantineFunc(inv *inventory.Inventory, eng *risk.Engine) func(netip.Addr)
 		if !ok {
 			return false
 		}
+		if _, released := exc.Active(mac); released {
+			return false
+		}
 		dev, ok := inv.Get(mac)
 		if !ok {
 			return false
 		}
 		return eng.Evaluate(dev, time.Now()).Tier == core.ContainmentQuarantined
 	}
+}
+
+// recordSinkhole writes the audit line for one containment decision: which
+// device, on which query, at what score, with which evidence.
+//
+// An audit write failure cannot be allowed to fail the DNS response -- the
+// device is already contained either way -- so it is reported loudly on
+// stderr instead of swallowed. ARCHITECTURE.md makes the log not optional;
+// this is the loud part.
+func recordSinkhole(auditLog *portal.Audit, inv *inventory.Inventory, eng *risk.Engine, ev core.NormalizedEvent) {
+	entry := portal.AuditEntry{
+		Action: "sinkhole",
+		IPs:    []string{ev.Src.IP.String()},
+		Query:  ev.QueryName,
+	}
+	if inv != nil && eng != nil {
+		if mac, ok := inv.MACFor(ev.Src.IP); ok {
+			if dev, ok := inv.Get(mac); ok {
+				a := eng.Evaluate(dev, time.Now())
+				entry.MAC = mac.String()
+				entry.Vendor = dev.Vendor
+				entry.Class = string(dev.Class)
+				entry.Score = a.Score
+				entry.Tier = string(a.Tier)
+				entry.Corroborated = a.Corroborated
+				entry.DistinctKinds = a.DistinctKinds
+				entry.Reasons = a.Reasons
+			}
+		}
+	}
+	if err := auditLog.Record(entry); err != nil {
+		fmt.Fprintf(os.Stderr, "r0-guard: audit write failed: %v\n", err)
+	}
+}
+
+// releaseToken returns the operator's release token, generating a random one
+// when none was given. A per-run random token printed to the operator's
+// terminal is the right default: nothing to forget to change, nothing in
+// shell history, and the device being contained never sees it.
+func releaseToken(given string) (string, error) {
+	if given != "" {
+		return given, nil
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("serve: generating release token: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// loadRemediation reads the optional vendor -> steps map shown by the portal.
+// Inventing device-specific instructions we have not verified would be worse
+// than the generic list, so the file is the only source of vendor claims.
+func loadRemediation(path string) (map[string][]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("serve: reading remediation file: %w", err)
+	}
+	var m map[string][]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("serve: parsing remediation file: %w", err)
+	}
+	return m, nil
+}
+
+// deviceFacingURL is the URL a redirected device will actually request: the
+// portal address from the sinkhole answer, on the port the listener took.
+func deviceFacingURL(device netip.Addr, bound net.Addr) string {
+	port := 80
+	if ta, ok := bound.(*net.TCPAddr); ok && ta.Port != 0 {
+		port = ta.Port
+	}
+	if port == 80 {
+		return fmt.Sprintf("http://%s/", device)
+	}
+	return fmt.Sprintf("http://%s:%d/", device, port)
 }
 
 // printReport writes the current ranked assessments to stdout. It is how the

@@ -21,7 +21,7 @@ The shippable product. Everything needed to observe a network, score devices, an
 - [x] Actuator interface + OpenWrt adapter
 - [ ] Actuator adapter + VyOS adapter
 - [ ] Actuator adapter + OPNsense adapter
-- [ ] Remediation portal with per-device reason codes and release action
+- [x] Remediation portal with per-device reason codes and release action
 - [ ] Action audit log
 - [ ] Docker Compose deployment
 - [ ] R0 measurement lab in `tests/lab/`

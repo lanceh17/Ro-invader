@@ -183,16 +183,22 @@ The inventory file maps IPs to MACs and device classes; without it, events canno
 
 `serve` runs the same pipeline live on DNS traffic. Queries are attributed from the inventory, scored as they arrive, and a device that reaches the quarantine tier has its lookups answered with the remediation portal — a walled garden rather than a cut-off, so a contained device can still reach its vendor's patch server. Nothing else is actuated, and the engine's corroboration rule still gates everything: a single signal never contains anything.
 
+`serve` also hosts that portal itself (`-portal-http`, default `:80`). The page a redirected device lands on shows its MAC, vendor, score, tier, the exact signal reasons that flagged it, and cleanup steps — per-vendor ones via `-remediation steps.json`, generic ones otherwise. Releasing the device back onto the network takes an operator token, printed at startup or set with `-portal-token`: the portal is reachable by the very device it contains, so a self-serve release button would be a containment bypass with extra steps. Releases are time-boxed (`-release-ttl`, default 24h; state persisted in `-state`, default `r0-guard-state.json`) — a forgotten release re-contains the device by itself. Every sinkhole decision and every release is appended to an audit log (`-audit`, default `r0-guard-audit.jsonl`, JSON Lines) recording the score, the evidence, and who clicked the button.
+
 ```bash
-# Try it without root: high port, and -observe guarantees it never sinkholes
+# Try it without root: high ports for both the resolver and the portal,
+# and -observe guarantees it never sinkholes
 ./r0-guard serve \
   -listen 127.0.0.1:5353 \
-  -portal 192.168.1.99 \
+  -portal 127.0.0.1 \
+  -portal-http 127.0.0.1:18080 \
   -inventory tests/fixtures/inventory.json \
   -observe
+# then open http://127.0.0.1:18080/
 
 # A real deployment runs as the network's resolver (DHCP option 6) without
-# -observe, so the risk engine's tiers are enforced as queries arrive:
+# -observe, so the risk engine's tiers are enforced as queries arrive;
+# sudo covers both :53 and the portal's :80:
 #   sudo ./r0-guard serve -portal 192.168.1.99 -inventory inventory.json
 ```
 
