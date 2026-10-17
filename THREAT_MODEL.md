@@ -1,6 +1,6 @@
 # Threat Model
 
-**Scope:** R₀-Invader defends a single network under its user's administrative control — a home or small business. It reduces the reproduction number of a self-replicating agent *on that network*. It does not, and cannot, reduce the global epidemic.
+**Scope:** R0-Invader defends a single network under its user's administrative control — a home or small business. It reduces the reproduction number of a self-replicating agent *on that network*. It does not, and cannot, reduce the global epidemic.
 
 **Last updated:** 2026-10-17
 
@@ -33,7 +33,7 @@ The defining property is that **the model weights are the malware payload**. The
 
 ### Threat taxonomy
 
-Anthropic identifies three replicator classes. **R₀-Invader targets exactly one:**
+Anthropic identifies three replicator classes. **R0-Invader targets exactly one:**
 
 | # | Replicator class | In scope? |
 |---|---|---|
@@ -63,7 +63,7 @@ Commodity IoT and edge hardware with sufficient memory to hold a model shard at 
 
 ### Observable behaviors
 
-Behaviors that R₀-Invader detects, all derived from what replication actually requires:
+Behaviors that R0-Invader detects, all derived from what replication actually requires:
 
 - Multi-gigabyte transfers to or from model hosting endpoints, and between LAN hosts.
 - Sustained device-to-device byte volume consistent with distributed inference.
@@ -81,12 +81,12 @@ Behaviors that R₀-Invader detects, all derived from what replication actually 
 
 - **Datacenter replicators.** These target infrastructure above our observation boundary.
 - **API-credential replicators.** These live in a model provider's environment, which we do not see.
-- **Upstream infection.** A worm that reaches a neighbor through the ISP's network is outside our view entirely. We reduce *your* contribution to R₀, not the global rate. This limitation is structural and cannot be engineered away from a single edge position.
+- **Upstream infection.** A worm that reaches a neighbor through the ISP's network is outside our view entirely. We reduce *your* contribution to R0, not the global rate. This limitation is structural and cannot be engineered away from a single edge position.
 
 ### By design
 
 - **Zero-day exploitation.** We do not attempt to prevent novel exploitation of unpatched flaws. Our position is that containment bounds the damage from a successful entry regardless of how it happened.
-- **Endpoint compromise.** R₀-Invader does not run on endpoints, does not install agents on IoT devices, and does not modify device firmware. It acts only at the network layer and through the DNS resolver.
+- **Endpoint compromise.** R0-Invader does not run on endpoints, does not install agents on IoT devices, and does not modify device firmware. It acts only at the network layer and through the DNS resolver.
 - **Devices that never route through us.** A device with a hardcoded resolver, a static IP, and no wireless association will not appear in our inventory. Partial mitigation: wireless clients are still visible via 802.11 association lists regardless of IP configuration.
 
 ---
@@ -101,7 +101,7 @@ This means:
 
 1. **Artifact detectors are a generation-specific control.** A replicator that encrypts or compresses its weight traffic, or that learns to mimic benign traffic patterns, will defeat the detection signals. The paper's authors state this directly: the behavioral signatures they observed are "artefacts of our proof-of-concept scope, not inherent properties of AI-driven worms," and a future adversary would point the same reasoning at "clean logs, mimic legitimate traffic patterns, or establish covert communication channels."
 2. **The containment core is the durable control.** Cutting peer reachability below one is effective against *any* propagating agent regardless of how cleverly it hides its traffic, because it does not depend on detection at all. This is why the containment loop ships in v0.1 and the detectors ship in v0.2.
-3. **The containment core is justified by today's threat.** Mirai-class botnets still infect millions of devices using exactly the default-credential and KEV entry vectors the replicator would use. R₀-Invader is defensible on that basis alone, independent of whether the AI replicator materializes.
+3. **The containment core is justified by today's threat.** Mirai-class botnets still infect millions of devices using exactly the default-credential and KEV entry vectors the replicator would use. R0-Invader is defensible on that basis alone, independent of whether the AI replicator materializes.
 
 ---
 
@@ -109,7 +109,7 @@ This means:
 
 ### What we can see
 
-R₀-Invader sits at the network edge with authoritative DNS. It observes every DNS query a device makes through it, every flow traversing the router, and the inventory state of the network.
+R0-Invader sits at the network edge with authoritative DNS. It observes every DNS query a device makes through it, every flow traversing the router, and the inventory state of the network.
 
 ### What we cannot see
 
@@ -126,7 +126,7 @@ That window is the single most useful property of this threat class for a defend
 
 ---
 
-## 6. What actually reduces R₀
+## 6. What actually reduces R0
 
 The epidemiological framing is the governing design principle. For a replicator to remain endemic, each infected device must on average infect at least one other device. Any control that pushes that average below one causes the outbreak to die out.
 

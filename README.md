@@ -1,6 +1,6 @@
 <div align="center">
 
-# R₀-Invader
+# R0-Invader
 
 **An AI worm must move its own weights to every new host.**
 **That makes it loud, slow, and killable.**
@@ -38,11 +38,11 @@ The worm does not get into "any" device. It gets into the ones you already know 
 
 A Mirai payload is 60 KB and silent. An AI worm must copy its *own reasoning capacity* onto each new host and stand up an inference engine there. That is enormously loud.
 
-### 3. Cutting R₀ below 1 kills any outbreak
+### 3. Cutting R0 below 1 kills any outbreak
 
 The epidemiological framing is the whole design. If each infected device infects fewer than one other device, the outbreak dies regardless of how clever the agent is. Anthropic cites the strongest empirical result in this space: restricting an infected subscriber's network to a short egress whitelist cleared **92% of Mirai infections in 14 days, versus 74% with notification alone.**
 
-R₀-Invader does both: it detects the artifacts replication produces, and it cuts reachability so the outbreak terminates even when detection misses.
+R0-Invader does both: it detects the artifacts replication produces, and it cuts reachability so the outbreak terminates even when detection misses.
 
 ---
 
@@ -76,7 +76,7 @@ R₀-Invader does both: it detects the artifacts replication produces, and it cu
 2. **Feed ingest** pulls ThreatFox, URLhaus, CISA KEV, and SSLBL, then normalizes them with confidence, TTL, and IoT-specific tagging — something no consumer tool currently does.
 3. **Detection** runs nine pure-function signal matchers over normalized telemetry, each with a documented false-positive profile.
 4. **Risk scoring** accumulates signal weight per device with exponential decay, so a single weak signal never triggers an action.
-5. **Containment** moves a device to a quarantine zone: peer traffic blocked (this is what drives R₀ below 1), internet restricted to a walled garden of vendor patch servers.
+5. **Containment** moves a device to a quarantine zone: peer traffic blocked (this is what drives R0 below 1), internet restricted to a walled garden of vendor patch servers.
 6. **Portal** explains *why* a device was contained and gives device-specific remediation steps.
 
 ---
@@ -87,7 +87,7 @@ Stated plainly, because the failure mode of security tools is overpromising:
 
 - **It never probes your network.** No scanning, no fingerprinting by active request, no exploitation. It is passive by architecture, not by configuration. See [SAFETY.md](SAFETY.md).
 - **It does not run on endpoints.** No agents on your devices, no firmware modification. Network layer and DNS only.
-- **It does not see upstream.** A worm reaching a neighbor through your ISP's network is outside our observation boundary. We reduce *your* contribution to R₀, not the global rate.
+- **It does not see upstream.** A worm reaching a neighbor through your ISP's network is outside our observation boundary. We reduce *your* contribution to R0, not the global rate.
 - **It does not detect SSH key injection.** That is invisible without interception, which we do not perform. We say so rather than implying otherwise.
 - **Artifact detection is generation-specific.** A replicator that encrypts or compresses its weight traffic will defeat the detectors. The containment core is what must hold — and it works regardless of detection, because it acts on reachability rather than on identification.
 
@@ -128,7 +128,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Proving it works
 
-We are not going to ask you to take containment efficacy on faith. The lab in `tests/lab/` stands up a containerized multi-segment network and measures R₀ with and without containment enabled. The number it produces is the metric this project is judged on.
+We are not going to ask you to take containment efficacy on faith. The lab in `tests/lab/` stands up a containerized multi-segment network and measures R0 with and without containment enabled. The number it produces is the metric this project is judged on.
 
 ---
 

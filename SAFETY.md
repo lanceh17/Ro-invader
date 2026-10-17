@@ -1,6 +1,6 @@
 # Safety and Dual-Use Posture
 
-R₀-Invader is a defensive tool. This document records the commitments that make that true in a way that can be checked against the code, not merely asserted in a README.
+R0-Invader is a defensive tool. This document records the commitments that make that true in a way that can be checked against the code, not merely asserted in a README.
 
 **Last updated:** 2026-10-17
 
@@ -8,7 +8,7 @@ R₀-Invader is a defensive tool. This document records the commitments that mak
 
 ## 1. Passive-only is an architectural commitment
 
-**R₀-Invader never sends a packet to a host it does not own or administer.** It does not scan, probe, fingerprint by active request, fuzz, or exploit. This is not a configuration flag that can be turned off; it is a property of the design, and it is the single most important line in this document.
+**R0-Invader never sends a packet to a host it does not own or administer.** It does not scan, probe, fingerprint by active request, fuzz, or exploit. This is not a configuration flag that can be turned off; it is a property of the design, and it is the single most important line in this document.
 
 Why it is structural rather than configurable:
 
@@ -24,11 +24,11 @@ A tool that actively scans creates ambiguity under laws such as the U.S. Compute
 
 ## 2. Containment is reversible and human-overridable
 
-The most consequential action R₀-Invader can take is to restrict a device's network access. That action is bounded:
+The most consequential action R0-Invader can take is to restrict a device's network access. That action is bounded:
 
 - **Reversible by a human, always.** Quarantine can be released from the portal. There is no state from which a device cannot be recovered.
 - **Default posture is observe, not act.** A fresh installation runs in `monitor` mode and logs without restricting. Escalation requires either a high-confidence signal or corroboration from two independent sources.
-- **No automatic remediation on endpoints.** R₀-Invader does not patch, does not modify, does not execute, and does not install anything on a managed device. Its worst action is "this device cannot reach its peers until a person clicks release."
+- **No automatic remediation on endpoints.** R0-Invader does not patch, does not modify, does not execute, and does not install anything on a managed device. Its worst action is "this device cannot reach its peers until a person clicks release."
 - **No remote command execution, anywhere.** The project does not contain a mechanism for running commands on a target system, by design.
 
 ---
@@ -45,7 +45,7 @@ If you are contributing detection fixtures, keep them at this level of abstracti
 
 ## 4. Dependency and licensing posture
 
-R₀-Invader is Apache-2.0. It consumes several GPL-licensed tools, and the boundary is deliberate and enforced:
+R0-Invader is Apache-2.0. It consumes several GPL-licensed tools, and the boundary is deliberate and enforced:
 
 | Component | License | How we use it | Why the boundary matters |
 |---|---|---|---|
@@ -59,13 +59,13 @@ R₀-Invader is Apache-2.0. It consumes several GPL-licensed tools, and the boun
 **Known traps, documented so they are not rediscovered the hard way:**
 
 - `hagezi/dns-blocklists` and `AdGuardSDNSFilter` are GPL-3.0. Prefer raw upstream feeds over GPL-licensed aggregators, since the legal status of blocklist *data* under copyright is unsettled but a careful reviewer will argue the point.
-- **Spamhaus free-tier DBL is restricted to home and non-commercial use.** Commercial redistribution requires a DQS subscription. If you are packaging R₀-Invader for sale, this feed is not available to you on free terms.
+- **Spamhaus free-tier DBL is restricted to home and non-commercial use.** Commercial redistribution requires a DQS subscription. If you are packaging R0-Invader for sale, this feed is not available to you on free terms.
 - **abuse.ch's Feodo Tracker is empty** as of Operation Endgame. Do not build on it.
 - abuse.ch now requires an API key for ThreatFox. Read it from the `R0_THREATFOX_KEY` environment variable; never hardcode it.
 
 ---
 
-## 5. What R₀-Invader is not
+## 5. What R0-Invader is not
 
 To keep the dual-use question answered in advance rather than deferred:
 

@@ -24,9 +24,9 @@ The shippable product. Everything needed to observe a network, score devices, an
 - [ ] Remediation portal with per-device reason codes and release action
 - [ ] Action audit log
 - [ ] Docker Compose deployment
-- [ ] R₀ measurement lab in `tests/lab/`
+- [ ] R0 measurement lab in `tests/lab/`
 
-**Exit criteria:** the lab demonstrates measured R₀ below 1 with containment enabled, against a control run above 1. That number is the v0.1 release gate, not a passing test suite.
+**Exit criteria:** the lab demonstrates measured R0 below 1 with containment enabled, against a control run above 1. That number is the v0.1 release gate, not a passing test suite.
 
 ---
 
@@ -83,7 +83,7 @@ Ideas that have been considered and not scheduled. Each has a reason it is not y
 - **eBPF sensor as an alternative to Suricata.** Lower overhead on Pi-class hardware and permissive licensing, but a multi-year engine project to match Suricata's coverage. Worth evaluating only if Suricata proves unworkable on the target hardware.
 - **nDPI for L7 classification.** LGPL-3.0 and 450+ protocols. Considered as a replacement for OpenAppFilter, which is GPL-2.0-only and would be incompatible with Apache-2.0. Deferred until L7 classification is actually needed; flow and DNS data cover most signals.
 - **Home Assistant integration.** The closest thing to a maintained home device inventory UI. A read-only bridge would give users a familiar surface for the inventory we build.
-- **Commercial Spamhaus BCL access.** Arguably the closest thing to a purpose-built botnet-C2 feed. The free tier is home-use-only, so this is gated on whether R₀-Invader is ever packaged for sale.
+- **Commercial Spamhaus BCL access.** Arguably the closest thing to a purpose-built botnet-C2 feed. The free tier is home-use-only, so this is gated on whether R0-Invader is ever packaged for sale.
 - **Manufacturer-facing output.** A per-vendor report of what an OEM's devices look like on a network when compromised. Useful for advocacy, orthogonal to the product.
 
 ---

@@ -214,7 +214,7 @@ The source research lists beacon callbacks on non-standard ports as one of three
 
 Documented so that no one assumes coverage we have not claimed:
 
-**SSH public key injection.** Listed as a proof-of-concept artifact. Network-side detection requires TLS or SSH interception, which R₀-Invader does not perform and will not add. This is an endpoint-forensics problem, not a network one.
+**SSH public key injection.** Listed as a proof-of-concept artifact. Network-side detection requires TLS or SSH interception, which R0-Invader does not perform and will not add. This is an endpoint-forensics problem, not a network one.
 
 **Persistence mechanism installation** — service manager registration, scheduled task creation, cron modification. Entirely on-host and invisible at the network layer.
 

@@ -1,4 +1,4 @@
-# Containment and the R₀ Model
+# Containment and the R0 Model
 
 This document describes the mechanism that actually stops propagation, and it is deliberately separate from detection because **containment does not depend on detection.**
 
@@ -6,13 +6,13 @@ This document describes the mechanism that actually stops propagation, and it is
 
 ## The epidemiological framing
 
-A self-replicating agent persists on a network only if each infected device infects, on average, at least one other device. That average is the basic reproduction number, R₀.
+A self-replicating agent persists on a network only if each infected device infects, on average, at least one other device. That average is the basic reproduction number, R0.
 
-- **R₀ > 1** — the outbreak grows. Endemic.
-- **R₀ = 1** — the outbreak is stable. Endemic.
-- **R₀ < 1** — the outbreak shrinks. It dies out.
+- **R0 > 1** — the outbreak grows. Endemic.
+- **R0 = 1** — the outbreak is stable. Endemic.
+- **R0 < 1** — the outbreak shrinks. It dies out.
 
-Any control that pushes R₀ below one terminates the outbreak regardless of how capable the agent is, how novel its exploits are, or how well it hides its traffic. This is the single most important property of the design: **containment operates on reachability, not on identification.**
+Any control that pushes R0 below one terminates the outbreak regardless of how capable the agent is, how novel its exploits are, or how well it hides its traffic. This is the single most important property of the design: **containment operates on reachability, not on identification.**
 
 An outbreak that is 90% undetected but fully contained still terminates. An outbreak that is 100% detected but left with peer reachability does not.
 
@@ -24,9 +24,9 @@ An outbreak that is 90% undetected but fully contained still terminates. An outb
 
 If a compromised device can reach fewer than one other susceptible device on average, propagation stops at that node. The source research environment is described by its authors as "a flat network in which every host is reachable from every other," and they call it explicitly the worst case.
 
-Most real networks are not flat, but many are *effectively* flat at the consumer layer: a home router places every device on one broadcast domain with no segmentation between a security camera, a printer, and a laptop. R₀-Invader restores segmentation at the network layer without requiring the user to buy VLAN-capable hardware.
+Most real networks are not flat, but many are *effectively* flat at the consumer layer: a home router places every device on one broadcast domain with no segmentation between a security camera, a printer, and a laptop. R0-Invader restores segmentation at the network layer without requiring the user to buy VLAN-capable hardware.
 
-**Quarantine blocks peer-to-peer traffic.** This is the action that drives R₀ below 1, and it is why quarantine is not simply "cut the device's internet access." A device that keeps LAN access but loses internet has not been contained at all — it can still propagate laterally.
+**Quarantine blocks peer-to-peer traffic.** This is the action that drives R0 below 1, and it is why quarantine is not simply "cut the device's internet access." A device that keeps LAN access but loses internet has not been contained at all — it can still propagate laterally.
 
 ### Egress restriction
 
@@ -54,7 +54,7 @@ Every signal contributes to the per-device risk score. Nothing happens except th
 
 Peer-to-peer traffic between LAN hosts is blocked. Internet access is unrestricted.
 
-This is the tier that most directly drives R₀ below one. It is appropriate for a device with moderate-confidence risk that still needs cloud connectivity to function — a camera that must reach its vendor, for example.
+This is the tier that most directly drives R0 below one. It is appropriate for a device with moderate-confidence risk that still needs cloud connectivity to function — a camera that must reach its vendor, for example.
 
 The tradeoff: many IoT devices break entirely without LAN peer access, because they expect to talk to a hub, a bridge, or a companion phone on the same segment. Restricting such a device will visibly break it. This is intentional and is the correct trade, but the portal must say so clearly rather than leaving the user to discover it.
 
@@ -124,16 +124,16 @@ A quarantined device's DNS resolves through us authoritatively, which means we c
 
 ---
 
-## Measuring R₀
+## Measuring R0
 
 Claims about containment efficacy should be measurable. The lab in `tests/lab/` exists to produce a number.
 
 The lab stands up a containerized multi-segment network, seeds a propagating agent that moves an artifact between hosts and beacons on a schedule, and counts successful propagation events per infected host over a fixed observation window.
 
-- **Control run:** containment disabled. Measure observed R₀.
-- **Treatment run:** containment enabled at `restrict` or `quarantine`. Measure observed R₀.
+- **Control run:** containment disabled. Measure observed R0.
+- **Treatment run:** containment enabled at `restrict` or `quarantine`. Measure observed R0.
 
-The success criterion for the containment core is that the treatment run produces R₀ below 1.
+The success criterion for the containment core is that the treatment run produces R0 below 1.
 
 The propagating agent in the lab is a **propagation simulator**, not a replicator: it moves an inert file and emits scheduled connections. It contains no model weights, no inference engine, and no exploitation logic. Its purpose is to produce measurable propagation events that the containment system must interrupt. See [SAFETY.md](SAFETY.md) for why the distinction is enforced.
 
