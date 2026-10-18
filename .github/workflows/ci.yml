@@ -42,12 +42,17 @@ jobs:
 
       - name: Verify modules tidy
         run: |
+          echo "Before go mod tidy:"
+          cat go.sum 2>/dev/null || echo "(empty)"
           go mod tidy
+          echo "After go mod tidy:"
+          cat go.sum 2>/dev/null || echo "(empty)"
           # The '--' matters: with zero external dependencies no go.sum
           # exists, and git treats a bare pathspec that exists nowhere as a
           # fatal error (exit 128), which would fail this step forever.
           if ! git diff --exit-code -- go.mod go.sum; then
             echo "go.mod/go.sum are not tidy. Run: go mod tidy"
+            git diff go.mod go.sum
             exit 1
           fi
 
