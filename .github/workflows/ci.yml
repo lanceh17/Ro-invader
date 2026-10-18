@@ -18,20 +18,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.23'
           cache: false
-
-      - name: Debug environment
-        run: |
-          echo "Go version: $(go version)"
-          echo "GOPATH: ${GOPATH:-unset}"
-          echo "GOMODCACHE: ${GOMODCACHE:-unset}"
-          echo "PWD: $(pwd)"
-          echo "Files: $(ls -la)"
 
       - name: Verify formatting
         run: |
-          echo "=== gofmt ==="
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
             echo "The following files are not gofmt-formatted:"
@@ -40,64 +31,33 @@ jobs:
             echo "Run: gofmt -w ."
             exit 1
           fi
-          echo "gofmt: PASS"
 
       - name: Verify modules tidy
         run: |
-          echo "=== go mod tidy ==="
-          echo "Before:"
-          cat go.sum 2>/dev/null || echo "(empty)"
           go mod tidy
-          echo "After:"
-          cat go.sum 2>/dev/null || echo "(empty)"
           if ! git diff --exit-code -- go.mod go.sum; then
             echo "go.mod/go.sum are not tidy. Run: go mod tidy"
-            git diff go.mod go.sum
             exit 1
           fi
-          echo "go mod tidy: PASS"
 
       - name: Vet
-        run: |
-          echo "=== go vet ==="
-          go vet ./...
-          echo "go vet: PASS"
+        run: go vet ./...
 
       - name: Build
-        run: |
-          echo "=== go build ==="
-          go build ./...
-          echo "go build: PASS"
+        run: go build ./...
 
-      - name: Test (no race)
+      - name: Test
         run: |
-          echo "=== go test (no race) ==="
           set -o pipefail
-          if go test ./... -count=1 -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
-            echo "go test: PASS"
+          if go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
             exit 0
           fi
           grep -E '(^--- FAIL|^FAIL|WARNING: DATA RACE|^[[:space:]]*[a-zA-Z0-9_/.-]+\.go:[0-9]+)' test-output.txt \
             | head -60 | sed 's/^/::error::/' || true
           exit 1
 
-      - name: Write marker
-        if: always()
-        run: echo "test step reached" > test-marker.txt
-
-      - name: Upload test output
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-output
-          path: |
-            test-output.txt
-            test-marker.txt
-
       - name: Report coverage
-        run: |
-          echo "=== coverage ==="
-          go tool cover -func=coverage.out | tail -n 1
+        run: go tool cover -func=coverage.out | tail -n 1
 
   safety-gate:
     name: safety gate
@@ -105,28 +65,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Passive-only is an architectural commitment documented in SAFETY.md.
-      # These checks fail the build if a contribution introduces the specific
-      # patterns that would break it, so the commitment is enforced by CI
-      # rather than by reviewer vigilance alone.
-      #
-      # This is a tripwire, not a proof. It catches obvious regressions; a
-      # determined contributor could route around it. Human review of the
-      # actuator interface remains the real boundary.
       - name: Reject active probing patterns
         run: |
           set -euo pipefail
           fail=0
 
-          # Raw SYN or socket-level construction is the fingerprint of a
-          # scanner. The project has no legitimate reason to build packets.
           if grep -rn --include='*.go' -E 'golang\.org/x/net/icmp|syscall\.RawConn|SOCK_RAW|net\.DialIP' agent/ ; then
             echo "::error::Raw socket or ICMP usage found in agent/. R0-Invader is passive by architecture."
             fail=1
           fi
 
-          # Port-scan vocabulary has no place in a control plane that only
-          # reads telemetry.
           if grep -rn --include='*.go' -iE 'func .*(scan|probe|fuzz)' agent/ ; then
             echo "::error::scan/probe/fuzz function found in agent/. See SAFETY.md."
             fail=1
@@ -139,9 +87,6 @@ jobs:
           set -euo pipefail
           fail=0
 
-          # The system pushes firewall rules over vendor APIs. It must never
-          # gain a general-purpose execution channel, because that turns a
-          # containment tool into a remote-control tool.
           if grep -rn --include='*.go' -E '"os/exec"' agent/ ; then
             echo "::error::os/exec usage found in agent/. R0-Invader must not execute commands."
             fail=1
@@ -158,10 +103,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Suricata, OpenAppFilter, openNDS and similar tools are GPL and are
-          # consumed as subprocesses, never linked. A new require directive on
-          # one of them is a licensing regression, not just an architecture
-          # change.
           if [ -f go.mod ] && grep -nE 'OpenAppFilter|openNDS|suricata|ntop/ng|dionaea|cowrie' go.mod ; then
             echo "::error::GPL component appears in go.mod. Consume it as a subprocess instead."
             exit 1
