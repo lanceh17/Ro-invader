@@ -53,19 +53,18 @@ jobs:
         run: go build ./...
 
       - name: Test
+        # The pipeline sits in an `if` condition on purpose. GitHub runs steps
+        # under `bash -e`, which aborts a failing pipeline before the lines
+        # after it can report what failed -- so a red build used to say only
+        # that it was red.
         run: |
           set -o pipefail
-          go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            # Surface the failure as annotations. GitHub renders these on the
-            # run page without opening the logs, which is what makes a red
-            # build diagnosable at a glance rather than only by whoever can
-            # click through to the full log.
-            grep -E '(^--- FAIL|^FAIL|WARNING: DATA RACE|^[[:space:]]*[a-zA-Z0-9_/.-]+\.go:[0-9]+)' test-output.txt \
-              | head -60 | sed 's/^/::error::/' || true
+          if go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
+            exit 0
           fi
-          exit "$status"
+          grep -E '(^--- FAIL|^FAIL|WARNING: DATA RACE|^[[:space:]]*[a-zA-Z0-9_/.-]+\.go:[0-9]+)' test-output.txt \
+            | head -60 | sed 's/^/::error::/' || true
+          exit 1
 
       - name: Report coverage
         run: go tool cover -func=coverage.out | tail -n 1
