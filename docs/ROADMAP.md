@@ -16,16 +16,16 @@ The shippable product. Everything needed to observe a network, score devices, an
 - [x] Normalization with confidence, TTL, and provenance tagging
 - [x] Inventory ingest from all three router backends (VyOS 1.3 excluded — it has no API of any kind)
 - [x] Contain devices the router alone knows: the portal reads the same device table the resolver does, so a router-only device is attributed, scored, contained and released on the same terms as one an inventory file names — it simply has no class and no vendor yet, and its page says so
-- [ ] IEEE OUI vendor lookup
+- [x] IEEE OUI vendor lookup
 - [x] Per-device risk scoring with exponential decay
 - [x] Policy tier selection with corroboration requirement
 - [x] Actuator interface + OpenWrt adapter
-- [ ] Actuator adapter + VyOS adapter
-- [ ] Actuator adapter + OPNsense adapter
+- [x] Actuator adapter + VyOS adapter
+- [x] Actuator adapter + OPNsense adapter
 - [x] Remediation portal with per-device reason codes and release action
-- [ ] Action audit log
-- [ ] Docker Compose deployment
-- [ ] R0 measurement lab in `agent/tests/lab/`
+- [x] Action audit log
+- [x] Docker Compose deployment
+- [x] R0 measurement lab in `agent/tests/lab/`
 
 **Exit criteria:** the lab demonstrates measured R0 below 1 with containment enabled, against a control run above 1. That number is the v0.1 release gate, not a passing test suite.
 

@@ -1,0 +1,15 @@
+services:
+  r0-guard:
+    build: .
+    image: r0-invader:latest
+    container_name: r0-invader
+    ports:
+      - "5353:5353/udp"  # DNS resolver port
+      - "18080:18080/tcp"  # Portal HTTP
+    volumes:
+      - ./tests/fixtures:/fixtures:ro
+      - ./data:/data:rw
+    environment:
+      - R0_ABUSECH_KEY=${R0_ABUSECH_KEY}
+      - R0_ROUTER_KEY=${R0_ROUTER_KEY}
+    command: ["serve", "-listen", "0.0.0.0:5353", "-observe", "-portal", "127.0.0.1", "-portal-http", "127.0.0.1:18080", "-inventory", "/fixtures/inventory.json"]

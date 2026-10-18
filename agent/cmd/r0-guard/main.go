@@ -55,6 +55,7 @@ import (
 	"github.com/lanceh17/Ro-invader/agent/internal/core"
 	"github.com/lanceh17/Ro-invader/agent/internal/dns"
 	"github.com/lanceh17/Ro-invader/agent/internal/feeds"
+	"github.com/lanceh17/Ro-invader/agent/internal/ingest/oui"
 	"github.com/lanceh17/Ro-invader/agent/internal/ingest/router"
 	"github.com/lanceh17/Ro-invader/agent/internal/ingest/suricata"
 	"github.com/lanceh17/Ro-invader/agent/internal/inventory"
@@ -313,6 +314,7 @@ func runServe(args []string) error {
 	routerPass := fs.String("router-pass", "", "OpenWrt password, or the API secret half of an OPNsense key/secret pair")
 	routerKey := fs.String("router-key", "", "VyOS or OPNsense API key; falls back to R0_ROUTER_KEY")
 	routerInterval := fs.Duration("router-interval", 5*time.Minute, "how often the router's lease and neighbour tables are read")
+	ouiEndpoint := fs.String("oui", "", "IEEE OUI registry URL for vendor lookup; empty disables")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -425,6 +427,18 @@ func runServe(args []string) error {
 	// addresses and devices through it, so they cannot disagree about which
 	// device an event belongs to.
 	table := newDeviceTable(inv, routerClient)
+
+	if *ouiEndpoint != "" {
+		store, err := oui.New(oui.Config{Endpoint: *ouiEndpoint})
+		if err != nil {
+			return err
+		}
+		if err := store.Load(context.Background()); err != nil {
+			return fmt.Errorf("serve: loading OUI registry: %w", err)
+		}
+		table.oui = store
+		fmt.Fprintf(os.Stderr, "oui: %d vendor prefixes loaded\n", store.Len())
+	}
 
 	var gardenDomains []string
 	for _, g := range strings.Split(*garden, ",") {
@@ -753,6 +767,7 @@ func quarantineFunc(t *deviceTable, eng *risk.Engine, exc *portal.Exceptions) fu
 type deviceTable struct {
 	inv    *inventory.Inventory
 	router *router.Client
+	oui    *oui.Store
 }
 
 // The portal declares what it needs; this is where the concrete tables are, so
@@ -816,9 +831,14 @@ func (t *deviceTable) Get(mac net.HardwareAddr) (core.Device, bool) {
 		}
 	}
 	if t.router != nil {
-		for _, dev := range t.router.Devices() {
-			if dev.MAC.String() == mac.String() {
-				return dev, true
+		for _, d := range t.router.Devices() {
+			if d.MAC.String() == mac.String() {
+				if t.oui != nil && d.Vendor == "" {
+					if vendor, found := t.oui.Lookup(mac); found {
+						d.Vendor = vendor
+					}
+				}
+				return d, true
 			}
 		}
 	}

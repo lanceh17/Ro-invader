@@ -18,5 +18,26 @@ func All() []core.Detector {
 		// why it is constructed here rather than being a package-level
 		// singleton: each caller gets an independent baseline.
 		NewDNSDriftDetector(0, nil),
+		NewWeightTransferDetector(nil),
+		NewEastWestVolumeDetector(nil),
+		NewAuthFanoutDetector(0),
+		NewBurstDetector(0, 0),
+		NewBeaconDetector(0, 0, nil),
+		NewInferenceEngineDetector(nil),
+		NewNewDeviceDetector(0),
 	}
+}
+
+// EvalAll evaluates all detectors on a slice of events and returns all signals
+// that fired across the entire detector set.
+func EvalAll(events []core.NormalizedEvent) []core.Signal {
+	var all []core.Signal
+	for _, ev := range events {
+		for _, d := range All() {
+			for _, s := range d.Evaluate(ev) {
+				all = append(all, s)
+			}
+		}
+	}
+	return all
 }
