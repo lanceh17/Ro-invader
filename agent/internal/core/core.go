@@ -176,7 +176,7 @@ const (
 	SignalModelHostOnIoT  SignalKind = "R2"
 	SignalInferenceEngine SignalKind = "R3"
 	SignalEastWestVolume  SignalKind = "R4"
-	SignalBurst       SignalKind = "R5"
+	SignalBurst           SignalKind = "R5"
 	SignalAuthFanout      SignalKind = "R6"
 	SignalDNSDrift        SignalKind = "R7"
 	SignalNewDevice       SignalKind = "R8"

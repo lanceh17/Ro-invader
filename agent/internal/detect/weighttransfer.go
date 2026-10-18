@@ -66,6 +66,9 @@ func (d *WeightTransferDetector) Evaluate(e core.NormalizedEvent) []core.Signal 
 	if e.Bytes <= d.threshold {
 		return nil
 	}
+	if len(e.DeviceMAC) == 0 {
+		return nil
+	}
 	host := firstNonEmpty(e.SNI, e.QueryName)
 	if host == "" {
 		return nil

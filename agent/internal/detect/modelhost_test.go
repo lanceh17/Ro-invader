@@ -1,7 +1,6 @@
 package detect
 
 import (
-	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -9,15 +8,7 @@ import (
 	"github.com/lanceh17/Ro-invader/agent/internal/core"
 )
 
-func mac(s string) net.HardwareAddr {
-	hw, err := net.ParseMAC(s)
-	if err != nil {
-		panic(err)
-	}
-	return hw
-}
-
-func baseEvent() core.NormalizedEvent {
+func modelHostBaseEvent() core.NormalizedEvent {
 	return core.NormalizedEvent{
 		Time:      time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC),
 		Kind:      core.EventTLS,
@@ -36,7 +27,7 @@ func baseEvent() core.NormalizedEvent {
 func TestModelHostDetector_MatchesConfiguredDomain(t *testing.T) {
 	d := NewModelHostDetector(nil)
 
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.SNI = "huggingface.co"
 
 	got := d.Evaluate(e)
@@ -63,7 +54,7 @@ func TestModelHostDetector_MatchesSubdomain(t *testing.T) {
 
 	// A CDN subdomain is the realistic case for a multi-gigabyte weight
 	// pull; it would never appear as a bare apex domain.
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.SNI = "cdn-lfs.huggingface.co"
 
 	if got := d.Evaluate(e); len(got) != 1 {
@@ -88,7 +79,7 @@ func TestModelHostDetector_RejectsBareHuggingfaceLookalike(t *testing.T) {
 	}
 
 	for _, host := range cases {
-		e := baseEvent()
+		e := modelHostBaseEvent()
 		e.SNI = host
 		if got := d.Evaluate(e); len(got) != 0 {
 			t.Errorf("host %q should not match, got %d signals", host, len(got))
@@ -101,7 +92,7 @@ func TestModelHostDetector_IgnoresUnattributableEvents(t *testing.T) {
 
 	// An inbound flow with no LAN-side MAC tells us nothing about which of
 	// our devices is responsible, so it must not produce a signal.
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.DeviceMAC = nil
 	e.SNI = "huggingface.co"
 
@@ -115,7 +106,7 @@ func TestModelHostDetector_FallsBackToDNSQueryName(t *testing.T) {
 
 	// A device that queries but never completes TLS still reveals intent,
 	// and DNS is our only guaranteed sensor in passive-only mode.
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.Kind = core.EventDNSQuery
 	e.SNI = ""
 	e.QueryName = "ollama.com"
@@ -132,7 +123,7 @@ func TestModelHostDetector_FallsBackToDNSQueryName(t *testing.T) {
 func TestModelHostDetector_PrefersSNIOverQueryName(t *testing.T) {
 	d := NewModelHostDetector(nil)
 
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.SNI = "huggingface.co"
 	e.QueryName = "example.com" // unrelated
 
@@ -148,7 +139,7 @@ func TestModelHostDetector_PrefersSNIOverQueryName(t *testing.T) {
 func TestModelHostDetector_CustomSuffixesReplaceDefaults(t *testing.T) {
 	d := NewModelHostDetector([]string{"models.internal.example"})
 
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.SNI = "huggingface.co"
 	if got := d.Evaluate(e); len(got) != 0 {
 		t.Errorf("default suffix should not match when custom suffixes supplied, got %d", len(got))
@@ -163,7 +154,7 @@ func TestModelHostDetector_CustomSuffixesReplaceDefaults(t *testing.T) {
 func TestModelHostDetector_StripWildcardPrefix(t *testing.T) {
 	d := NewModelHostDetector([]string{"*.cdn.example"})
 
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.SNI = "files.cdn.example"
 
 	if got := d.Evaluate(e); len(got) != 1 {
@@ -178,7 +169,7 @@ func TestModelHostDetector_StripWildcardPrefix(t *testing.T) {
 func TestModelHostDetector_IsPure(t *testing.T) {
 	d := NewModelHostDetector(nil)
 
-	e := baseEvent()
+	e := modelHostBaseEvent()
 	e.SNI = "huggingface.co"
 
 	a := d.Evaluate(e)
