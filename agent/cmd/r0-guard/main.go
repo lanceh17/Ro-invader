@@ -48,6 +48,7 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -436,7 +437,7 @@ func runServe(args []string) error {
 		if err := store.Load(context.Background()); err != nil {
 			return fmt.Errorf("serve: loading OUI registry: %w", err)
 		}
-		table.oui = store
+		table.oui.Store(store)
 		fmt.Fprintf(os.Stderr, "oui: %d vendor prefixes loaded\n", store.Len())
 	}
 
@@ -767,7 +768,7 @@ func quarantineFunc(t *deviceTable, eng *risk.Engine, exc *portal.Exceptions) fu
 type deviceTable struct {
 	inv    *inventory.Inventory
 	router *router.Client
-	oui    *oui.Store
+	oui    atomic.Value // stores *oui.Store
 }
 
 // The portal declares what it needs; this is where the concrete tables are, so
@@ -833,9 +834,13 @@ func (t *deviceTable) Get(mac net.HardwareAddr) (core.Device, bool) {
 	if t.router != nil {
 		for _, d := range t.router.Devices() {
 			if d.MAC.String() == mac.String() {
-				if t.oui != nil && d.Vendor == "" {
-					if vendor, found := t.oui.Lookup(mac); found {
-						d.Vendor = vendor
+				if v := t.oui.Load(); v != nil {
+					if store, ok := v.(*oui.Store); ok {
+						if d.Vendor == "" {
+							if vendor, found := store.Lookup(mac); found {
+								d.Vendor = vendor
+							}
+						}
 					}
 				}
 				return d, true
