@@ -58,15 +58,15 @@ func newPortalEnv(t *testing.T) *portalEnv {
 	// cleanup fails while the log file is still open.
 	t.Cleanup(func() { _ = aud.Close() })
 	cfg := Config{
-		Engine:      eng,
-		Inventory:   inv,
-		Garden:      []string{"support.example"},
-		Remediation: map[string][]string{"hikvision": {"Install the 2026 firmware published by Hikvision."}},
-		Exceptions:  exc,
-		Audit:       aud,
-		Token:       "test-token",
-		ReleaseTTL:  time.Hour,
-		Now:         clk.now,
+		Engine:       eng,
+		DeviceSource: inv,
+		Garden:       []string{"support.example"},
+		Remediation:  map[string][]string{"hikvision": {"Install the 2026 firmware published by Hikvision."}},
+		Exceptions:   exc,
+		Audit:        aud,
+		Token:        "test-token",
+		ReleaseTTL:   time.Hour,
+		Now:          clk.now,
 	}
 	return &portalEnv{cfg: cfg, mac: mac, clk: clk, auditP: auditP}
 }

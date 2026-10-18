@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"html"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -738,7 +741,7 @@ func TestDeviceTableClassifiesFromInventory(t *testing.T) {
 
 	// Known to the file: the class and vendor come from the file, even though
 	// the router is what placed the device at this address.
-	dev, ok := table.Device(mustMAC(t, "aa:bb:cc:dd:ee:01"))
+	dev, ok := table.Get(mustMAC(t, "aa:bb:cc:dd:ee:01"))
 	if !ok {
 		t.Fatal("a device named by both sources was not found")
 	}
@@ -748,7 +751,7 @@ func TestDeviceTableClassifiesFromInventory(t *testing.T) {
 
 	// Known only to the router: reported, but classified as unknown rather than
 	// guessed at, because a guess here would move a risk score.
-	dev, ok = table.Device(mustMAC(t, "11:22:33:44:55:66"))
+	dev, ok = table.Get(mustMAC(t, "11:22:33:44:55:66"))
 	if !ok {
 		t.Fatal("a router-discovered device was not found")
 	}
@@ -757,58 +760,391 @@ func TestDeviceTableClassifiesFromInventory(t *testing.T) {
 	}
 }
 
-// TestQuarantineFuncRouterOnlyDeviceIsNotContained is the load-bearing
-// consequence of that asymmetry. The engine has this device well past the
-// quarantine threshold with corroboration, the router attributes the address
-// to it, and the containment predicate still says no -- because the portal,
-// which is the only place a human can release a contained device, is built from
-// the static inventory and has no page for this device at all.
+// --- a device only the router knows -----------------------------------------
 //
-// Containing it would redirect its lookups to a page saying it is not
-// contained, with no button anywhere to change that.
-func TestQuarantineFuncRouterOnlyDeviceIsNotContained(t *testing.T) {
-	inv := twoDeviceInventory(t)
-	rtr := mustRouterClient(t, &stubRouterSource{
-		name: "openwrt",
-		leases: []router.Lease{
-			{MAC: mustMAC(t, "11:22:33:44:55:66"), IP: netip.MustParseAddr(testDeviceIP)},
-		},
-	})
+// Containment and release are enforced in two different packages, by one
+// lookup each against the same table, and the fixtures below are built from
+// the real deviceTable, the real portal handler and a real release store
+// rather than from those pieces separately. Testing them apart would pass with
+// either one broken.
+
+const (
+	// routerOnlyMAC and routerOnlyIP name a device the static inventory has
+	// never heard of. twoDeviceInventory holds .50 and .51 and no others, so
+	// this address and this MAC belong to the router alone.
+	routerOnlyMAC = "11:22:33:44:55:66"
+	routerOnlyIP  = "192.168.1.77"
+)
+
+// routerOnlyEnv is a daemon whose device table holds one device purely because
+// the router said so, together with everything the portal needs to be a real
+// portal: an engine that has flagged it, a release store backed by a file, and
+// an audit log.
+type routerOnlyEnv struct {
+	table   *deviceTable
+	eng     *risk.Engine
+	exc     *portal.Exceptions
+	aud     *portal.Audit
+	auditP  string
+	clk     *testClock
+	mac     net.HardwareAddr
+	src     *stubRouterSource
+	rtr     *router.Client
+	handler http.Handler
+}
+
+// newRouterOnlyEnv wires it. The signals are observed at the clock's own time
+// so the engine's decay is neutral; the predicate and the portal evaluate at
+// different clocks by design, and the fixture must not depend on that gap.
+func newRouterOnlyEnv(t *testing.T) *routerOnlyEnv {
+	t.Helper()
+	src := &stubRouterSource{
+		name:   "openwrt",
+		leases: []router.Lease{{MAC: mustMAC(t, routerOnlyMAC), IP: netip.MustParseAddr(routerOnlyIP)}},
+	}
+	rtr := mustRouterClient(t, src)
+	clk := &testClock{t: time.Now()}
+	mac := mustMAC(t, routerOnlyMAC)
+
 	eng := risk.New()
-	now := time.Now()
-	routerMAC := mustMAC(t, "11:22:33:44:55:66")
 	for i := 0; i < 4; i++ {
-		eng.Observe(withMAC(mkSignal(core.SignalModelHostOnIoT, core.SignalReplicationRequired, 20, 0.6), routerMAC), now)
-		eng.Observe(withMAC(mkSignal(core.SignalDNSDrift, core.SignalReplicationRequired, 25, 0.5), routerMAC), now)
+		eng.Observe(withMAC(mkSignal(core.SignalModelHostOnIoT, core.SignalReplicationRequired, 20, 0.6), mac), clk.t)
+		eng.Observe(withMAC(mkSignal(core.SignalDNSDrift, core.SignalReplicationRequired, 25, 0.5), mac), clk.t)
 	}
 
-	table := newDeviceTable(inv, rtr)
+	dir := t.TempDir()
+	exc, err := portal.NewExceptions(filepath.Join(dir, "state.json"), clk.now)
+	if err != nil {
+		t.Fatalf("NewExceptions: %v", err)
+	}
+	auditP := filepath.Join(dir, "audit.jsonl")
+	aud := portal.NewAudit(auditP, clk.now)
+	// Windows keeps an open handle exclusive; without this the TempDir
+	// cleanup fails while the log file is still open.
+	t.Cleanup(func() { _ = aud.Close() })
 
-	// Sanity: the fixture must really be over the line, or the test passes
-	// vacuously if quarantineFunc refused everything.
-	dev, ok := table.Device(routerMAC)
+	e := &routerOnlyEnv{
+		table:  newDeviceTable(twoDeviceInventory(t), rtr),
+		eng:    eng,
+		exc:    exc,
+		aud:    aud,
+		auditP: auditP,
+		clk:    clk,
+		mac:    mac,
+		src:    src,
+		rtr:    rtr,
+	}
+	e.handler = e.portalFor(t, e.table)
+	return e
+}
+
+// portalFor builds a portal over any table, sharing this run's engine, release
+// store and audit log. It is what lets a test model the daemon coming back up
+// against a different device table without losing the operator's decisions.
+func (e *routerOnlyEnv) portalFor(t *testing.T, table *deviceTable) http.Handler {
+	t.Helper()
+	srv, err := portal.New(portal.Config{
+		Engine:       e.eng,
+		DeviceSource: table,
+		Garden:       []string{"support.example"},
+		Exceptions:   e.exc,
+		Audit:        e.aud,
+		Token:        "test-token",
+		ReleaseTTL:   time.Hour,
+		Now:          e.clk.now,
+	})
+	if err != nil {
+		t.Fatalf("portal.New: %v", err)
+	}
+	return srv.Handler()
+}
+
+func (e *routerOnlyEnv) get(t *testing.T, ip string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = net.JoinHostPort(ip, "54321")
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func (e *routerOnlyEnv) release(t *testing.T, ip string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/release",
+		strings.NewReader(url.Values{"token": {"test-token"}, "ip": {ip}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.RemoteAddr = net.JoinHostPort("192.168.1.60", "5555")
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// contained is the resolver's verdict for ip on this run.
+func (e *routerOnlyEnv) contained(ip string) bool {
+	return quarantineFunc(e.table, e.eng, e.exc)(netip.MustParseAddr(ip))
+}
+
+// readAuditEntries parses the JSON Lines log the portal wrote. The portal
+// package has an identical reader, but it is a test helper in another package
+// and reaching across for it would mean exporting test-only code to make a
+// test possible.
+func readAuditEntries(t *testing.T, path string) []portal.AuditEntry {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading audit log: %v", err)
+	}
+	var out []portal.AuditEntry
+	for i, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e portal.AuditEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("audit line %d is not valid JSON: %v", i, err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// TestQuarantineFuncContainsRouterOnlyDevice is the positive case for a device
+// no file names, and it was the negative one until the portal began reading
+// this same table. Refusing it was correct while the portal had no page for it:
+// a contained device whose lookups resolve to a page saying it is not
+// contained, with no button anywhere to change that, is worse than an
+// uncontained one. Now that the page is built from the table the two are no
+// longer separable, and the rule is simply whether the device can be described.
+func TestQuarantineFuncContainsRouterOnlyDevice(t *testing.T) {
+	e := newRouterOnlyEnv(t)
+
+	// Precondition, or the test passes vacuously if the predicate starts
+	// refusing everything.
+	dev, ok := e.table.Get(e.mac)
 	if !ok {
-		t.Fatal("precondition: the device is not in the table")
+		t.Fatal("precondition: the router-only device is not in the table")
 	}
-	if tier := eng.Evaluate(dev, now).Tier; tier != core.ContainmentQuarantined {
-		t.Fatalf("precondition: fixture device tier = %v, want quarantined", tier)
-	}
-
-	qf := quarantineFunc(table, eng, nil)
-	if qf(netip.MustParseAddr(testDeviceIP)) {
-		t.Error("a device the portal cannot release was contained")
+	if tier := e.eng.Evaluate(dev, time.Now()).Tier; tier != core.ContainmentQuarantined {
+		t.Fatalf("precondition: tier = %v, want quarantined", tier)
 	}
 
-	// The same signals against a device the file does name is contained, so
-	// the refusal above is about the missing record and not about the score.
+	if !e.contained(routerOnlyIP) {
+		t.Error("a corroborated, over-threshold router-only device was not contained")
+	}
+
+	// The rule is not "router only" -- it is "describable". The same signals
+	// against a device the file names is contained exactly as it always was,
+	// which is what shows the change widened containment rather than moved it.
 	static := mustMAC(t, "aa:bb:cc:dd:ee:02")
 	for i := 0; i < 4; i++ {
-		eng.Observe(withMAC(mkSignal(core.SignalModelHostOnIoT, core.SignalReplicationRequired, 20, 0.6), static), now)
-		eng.Observe(withMAC(mkSignal(core.SignalDNSDrift, core.SignalReplicationRequired, 25, 0.5), static), now)
+		e.eng.Observe(withMAC(mkSignal(core.SignalModelHostOnIoT, core.SignalReplicationRequired, 20, 0.6), static), e.clk.t)
+		e.eng.Observe(withMAC(mkSignal(core.SignalDNSDrift, core.SignalReplicationRequired, 25, 0.5), static), e.clk.t)
 	}
-	if !qf(netip.MustParseAddr("192.168.1.51")) {
+	if !e.contained("192.168.1.51") {
 		t.Error("a device named by the inventory was not contained")
 	}
+}
+
+// TestRouterOnlyDevicePortalPageIsReleasable: the page that device is
+// redirected to has to name it, tell it what happened, and offer the button --
+// with no class and no vendor to show, because the router publishes neither.
+func TestRouterOnlyDevicePortalPageIsReleasable(t *testing.T) {
+	e := newRouterOnlyEnv(t)
+	rec := e.get(t, routerOnlyIP)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		routerOnlyMAC,                     // it is named
+		`is <strong>quarantined</strong>`, // and told it is contained
+		`action="/release"`,               // and handed the button
+		`name="token"`,
+		// Nothing published about it, stated rather than left blank, and the
+		// reason for that stated with it.
+		"Unknown (none published)",
+		"Unclassified",
+		"No vendor or class has been published",
+		// The generic steps, because there is no vendor to match on. The page
+		// is HTML, so the rendered step is the escaped form.
+		html.EscapeString(portal.DefaultRemediation[0]),
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+// TestRouterOnlyDeviceReleaseEndToEnd: the release an operator clicks is
+// persisted, audited, honoured by the resolver on its next query, and lapses on
+// its own so the device is contained again with nobody acting.
+func TestRouterOnlyDeviceReleaseEndToEnd(t *testing.T) {
+	e := newRouterOnlyEnv(t)
+
+	rec := e.release(t, routerOnlyIP)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("release status = %d (%s), want 303", rec.Code, rec.Body.String())
+	}
+	if loc := rec.Header().Get("Location"); loc != "/?released=1" {
+		t.Errorf("Location = %q, want /?released=1", loc)
+	}
+
+	exc, ok := e.exc.Active(e.mac)
+	if !ok {
+		t.Fatal("release did not become active for a router-only device")
+	}
+	if exc.By != "portal" || !exc.ExpiresAt.Equal(e.clk.t.Add(time.Hour)) {
+		t.Errorf("exception = %+v, want by=portal, expiry now+1h", exc)
+	}
+
+	entries := readAuditEntries(t, e.auditP)
+	if len(entries) != 1 {
+		t.Fatalf("audit has %d entries, want 1", len(entries))
+	}
+	a := entries[0]
+	if a.Action != "release" || a.MAC != e.mac.String() || a.By != "portal" {
+		t.Errorf("audit entry = %+v, want release for %s by portal", a, e.mac)
+	}
+	if a.Tier != "quarantined" || a.Score <= risk.DefaultConfig().QuarantineThreshold {
+		t.Errorf("audit assessment = score %v tier %q, want the state that justified release", a.Score, a.Tier)
+	}
+	if a.Expires == nil || !a.Expires.Equal(exc.ExpiresAt) {
+		t.Errorf("audit expiry = %v, want %v", a.Expires, exc.ExpiresAt)
+	}
+
+	// Honoured immediately: the resolver consults the same store on every query.
+	if e.contained(routerOnlyIP) {
+		t.Error("the device is still contained after its release")
+	}
+	if !strings.Contains(e.get(t, routerOnlyIP).Body.String(), "Released by portal") {
+		t.Error("the released device's own page does not show the release")
+	}
+
+	// And time-boxed: reversible, but not permanent.
+	e.clk.t = e.clk.t.Add(2 * time.Hour)
+	if !e.contained(routerOnlyIP) {
+		t.Error("an expired release did not re-contain the router-only device")
+	}
+}
+
+// TestReleaseSurvivesTheDeviceLeavingTheTable is the guarantee that makes it
+// safe to contain a device the portal learned about from a router. The release
+// is keyed on the MAC, which does not change when the table is rebuilt, so a
+// device that drops out of the table and comes back is still under the
+// operator's decision and is not re-contained until that decision lapses.
+//
+// The device is made to disappear by starting from an empty router rather than
+// by a poll: router.Client.merge never removes what it learned, by design, so a
+// rebuilt table is the only way this state is reached -- and it is exactly what
+// a restart against an unresponsive router looks like.
+func TestReleaseSurvivesTheDeviceLeavingTheTable(t *testing.T) {
+	e := newRouterOnlyEnv(t)
+	if rec := e.release(t, routerOnlyIP); rec.Code != http.StatusSeeOther {
+		t.Fatalf("release status = %d (%s), want 303", rec.Code, rec.Body.String())
+	}
+
+	blank := newDeviceTable(twoDeviceInventory(t), mustRouterClient(t, &stubRouterSource{name: "openwrt"}))
+	if _, ok := blank.Get(e.mac); ok {
+		t.Fatal("precondition: a router that reported nothing still describes the device")
+	}
+	e.handler = e.portalFor(t, blank)
+
+	// The decision outlives the table it was made against.
+	if _, ok := e.exc.Active(e.mac); !ok {
+		t.Error("the release did not survive the device leaving the table")
+	}
+	if e.contained(routerOnlyIP) {
+		t.Error("an address no table resolves was contained")
+	}
+	if body := e.get(t, routerOnlyIP).Body.String(); !strings.Contains(body, "No record") {
+		t.Error("the page did not report that the device table could not name the address")
+	}
+
+	// The device comes back, into the same store and the same run.
+	if err := e.rtr.Poll(context.Background()); err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if _, ok := e.table.Get(e.mac); !ok {
+		t.Fatalf("precondition: the device did not return to the table (Len = %d)", e.rtr.Len())
+	}
+	if e.contained(routerOnlyIP) {
+		t.Error("a device under an unexpired release was re-contained when it returned to the table")
+	}
+	e.handler = e.portalFor(t, e.table)
+	if !strings.Contains(e.get(t, routerOnlyIP).Body.String(), "Released by portal") {
+		t.Error("the returning device's page lost its release banner")
+	}
+
+	e.clk.t = e.clk.t.Add(2 * time.Hour)
+	if !e.contained(routerOnlyIP) {
+		t.Error("an expired release did not re-contain the device after it returned")
+	}
+}
+
+// TestPortalConcurrentWithRouterPoll is the test that fails under -race if the
+// portal reaches anything the poll loop mutates without a lock.
+//
+// This is the ordinary shape of a serve run: an operator loading a device's
+// status page at the moment a poll lands. Everything on that path is either
+// immutable after construction or internally locked -- deviceTable is written
+// once and never reassigned, *inventory.Inventory is read-only after Load, and
+// router.Client holds an RWMutex across exactly the maps the portal reads -- so
+// a race here would mean one of those claims is false. CI runs the suite with
+// -race, which is where that is actually enforced.
+func TestPortalConcurrentWithRouterPoll(t *testing.T) {
+	e := newRouterOnlyEnv(t)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				// Every handler path a contained device's browser can take:
+				// the page itself, and the lookup the release button's page
+				// already performed.
+				if rec := e.get(t, routerOnlyIP); rec.Code != http.StatusOK {
+					t.Errorf("status page = %d during a poll", rec.Code)
+					return
+				}
+				if _, ok := e.table.Get(e.mac); !ok {
+					t.Error("the device vanished from the table during a poll")
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := e.rtr.Poll(context.Background()); err != nil {
+				t.Errorf("Poll: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Hold the writers against the readers long enough for them to overlap.
+	for i := 0; i < 500; i++ {
+		if err := e.rtr.Poll(context.Background()); err != nil {
+			t.Fatalf("Poll: %v", err)
+		}
+	}
+	close(stop)
+	wg.Wait()
 }
 
 // TestPollRouterKeepsLeasesAfterFailure: one failed refresh must not cost the

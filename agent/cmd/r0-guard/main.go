@@ -23,6 +23,10 @@
 //     router offers — the router is asked what it knows, and nothing is written
 //     and nothing is executed on it.
 //
+// That table is also the remediation portal's, so a device only the router has
+// seen is containable and releasable on the same terms as one a file names —
+// it simply has no class and no vendor yet, and its page says so.
+//
 // Pushing firewall rules to a router is still in progress; see
 // docs/ROADMAP.md. Nothing here contacts a managed device directly.
 //
@@ -119,11 +123,9 @@ Status:
 
   With -router the router decides which device an address belongs to, so a
   lease that moved is reflected without editing a file. -inventory stays the
-  source of each device's class and vendor, and a device it does not name is
-  scored and reported but never contained — the portal's release page is built
-  from that file, and containing a device with no way to release it is the one
-  outcome worse than containing nothing. Reading the router is still only a
-  read.
+  source of each device's class and vendor; a device it does not name is still
+  attributed, scored and contained, and shows the generic cleanup steps instead
+  of vendor-specific ones. Reading the router is still only a read.
 
 This tool is passive by architecture: it never probes, scans, or transmits
 to a managed device. See SAFETY.md.
@@ -405,11 +407,15 @@ func runServe(args []string) error {
 		}
 		inv = loaded
 	} else if routerClient != nil {
-		// The router names devices and addresses, so attribution and scoring
-		// work without this file. Containment does not, and the reason is
-		// structural rather than a missing flag: a device needs a class and a
-		// portal page before it can be acted on, and only the file has both.
-		fmt.Fprintln(os.Stderr, "warning: no -inventory given; the router supplies devices and addresses, so queries are attributed and scored, but nothing can be contained -- see -inventory")
+		// The router names devices and addresses, so attribution, scoring and
+		// containment all work without this file: the portal reads the same
+		// table. What the file alone would have supplied is a class and a
+		// vendor, so say that plainly rather than letting an operator find it
+		// out on a page for a device they think they know.
+		fmt.Fprintln(os.Stderr,
+			"warning: no -inventory given; the router supplies devices and addresses, so queries are attributed, scored and contained.\n"+
+				"          Devices the router alone knows carry no class and no vendor: they are scored at neutral class\n"+
+				"          weighting and shown the generic cleanup steps. Add them to -inventory to classify them.")
 	} else {
 		fmt.Fprintln(os.Stderr, "warning: no -inventory given; queries cannot be attributed, so no signals will fire and nothing will be contained")
 	}
@@ -474,13 +480,12 @@ func runServe(args []string) error {
 	// it is spelled out rather than resolved silently. The router is
 	// authoritative for which device an address belongs to -- a lease that
 	// moved this morning is a fact the file cannot know -- and the file
-	// remains authoritative for classification and vendor, and for which
-	// devices exist as far as containment and release are concerned.
+	// remains authoritative for classification and vendor.
 	if routerClient != nil && inv != nil {
 		fmt.Fprintln(os.Stderr,
 			"r0-guard: -router and -inventory are both set: the router decides which device an address belongs to;\n"+
-				"          -inventory supplies each device's class and vendor, and names the devices that can be contained and released.\n"+
-				"          A device only the router has seen is attributed, scored and reported, but never contained.")
+				"          -inventory supplies each device's class and vendor. A device it does not name is still\n"+
+				"          attributed, scored and contained from the router's evidence alone, with no class and no vendor.")
 	}
 
 	// The indicator store exists even with no feeds: an empty store is the
@@ -523,20 +528,21 @@ func runServe(args []string) error {
 	if *portalHTTP != "" {
 		ps, err := portal.New(portal.Config{
 			Engine: engine,
-			// The static inventory, not the table: portal.Config.Inventory is
-			// typed as *inventory.Inventory, and the release button it renders
-			// has to look the device up in the same file the operator edits.
-			// A device the router has seen but that file does not name is
-			// therefore never contained, so this page is never asked about
-			// one -- see deviceTable and containmentCandidate.
-			Inventory:   inv,
-			Garden:      gardenDomains,
-			Remediation: remediation,
-			Exceptions:  exceptions,
-			Audit:       auditLog,
-			Token:       token,
-			ReleaseTTL:  *releaseTTL,
-			ReadOnly:    *observe,
+			// The table, not the file. The portal is the only place a human
+			// can undo a containment, so handing it a narrower view than the
+			// resolver holds is how a device ends up contained with no way out;
+			// this is the same pointer the resolver and the detectors resolve
+			// addresses through, so every device one can act on, the other can
+			// act back on. A device only the router knows renders with no class
+			// and no vendor, which changes what the page says and nothing else.
+			DeviceSource: table,
+			Garden:       gardenDomains,
+			Remediation:  remediation,
+			Exceptions:   exceptions,
+			Audit:        auditLog,
+			Token:        token,
+			ReleaseTTL:   *releaseTTL,
+			ReadOnly:     *observe,
 		})
 		if err != nil {
 			return err
@@ -700,12 +706,16 @@ func quarantineFunc(t *deviceTable, eng *risk.Engine, exc *portal.Exceptions) fu
 		if _, released := exc.Active(mac); released {
 			return false
 		}
-		// Static inventory only, and the reason is the release page: a device
-		// this run could contain but the portal cannot find is a device whose
-		// lookups are redirected to a page saying it is not contained, with no
-		// button to change that. Failing closed here costs an uncontained
-		// device; the other way costs one that cannot be released at all.
-		dev, ok := t.containmentCandidate(mac)
+		// A device this run may contain is exactly a device the portal can
+		// find a page for: the same table, handed to the portal as its
+		// DeviceSource, answering with the same two lookups. That used to be
+		// narrower -- the static inventory alone, because the portal was typed
+		// to *inventory.Inventory and had no page for a device the router alone
+		// knew. Refusing those was right while that was true, and it is what
+		// left a whole class of confirmed infections uncontainable. Now that
+		// the page is built from the table, the check is simply whether the
+		// table can describe the device.
+		dev, ok := t.Get(mac)
 		if !ok {
 			return false
 		}
@@ -724,19 +734,35 @@ func quarantineFunc(t *deviceTable, eng *risk.Engine, exc *portal.Exceptions) fu
 // quarantined. The static file still supplies class and vendor, because
 // classification drives the score's weighting and no router publishes one.
 //
-// Containment is the one place the two are deliberately not interchangeable,
-// and the asymmetry is a type boundary rather than a preference:
-// portal.Config.Inventory is a *inventory.Inventory, so a device discovered by
-// the router alone has no page that can show it and therefore no release
-// button. Such a device is attributed, scored and reported, and is never
-// contained. See containmentCandidate.
+// Containment and the portal are now the same table's business. The page and
+// its release button are built from the same two lookups the containment
+// predicate makes, so a device this run can act on is by construction one an
+// operator can act back on. A device the router alone knows carries no class
+// and no vendor, which changes what the page says about it and not whether it
+// can be freed.
 //
 // Both fields may be nil, in which case nothing can be attributed -- the same
 // honest nothing the run had before a router existed.
+//
+// The struct is immutable after construction and nothing here is ever
+// reassigned. That is what makes it safe to hand the same pointer to the
+// resolver and to every portal handler goroutine with no lock of its own: the
+// only mutable state underneath is the router client's, which carries its own
+// RWMutex, and the inventory's, which is written once by Load and read-only
+// forever after. There is no pointer here to swap under a running handler.
 type deviceTable struct {
 	inv    *inventory.Inventory
 	router *router.Client
 }
+
+// The portal declares what it needs; this is where the concrete tables are, so
+// the assertion lives here. If either signature moves in a way the portal's
+// contract depends on, the build breaks at the wiring rather than at a call
+// site nobody was watching.
+var (
+	_ portal.DeviceSource = (*deviceTable)(nil)
+	_ portal.DeviceSource = (*inventory.Inventory)(nil)
+)
 
 // newDeviceTable wires a table. Both arguments are optional.
 func newDeviceTable(inv *inventory.Inventory, rtr *router.Client) *deviceTable {
@@ -766,8 +792,10 @@ func (t *deviceTable) MACFor(ip netip.Addr) (net.HardwareAddr, bool) {
 	return nil, false
 }
 
-// Device returns the record to score for mac: the static inventory's when it
-// has one, otherwise the router's.
+// Get returns the record to score for mac: the static inventory's when it has
+// one, otherwise the router's. It satisfies portal.DeviceSource alongside
+// MACFor, which is what makes this table the portal's page for every device
+// the run can see.
 //
 // The preference is the enrichment rule above. A router-only device carries
 // core.ClassUnknown, which the risk engine scores at the neutral multiplier --
@@ -775,10 +803,10 @@ func (t *deviceTable) MACFor(ip netip.Addr) (net.HardwareAddr, bool) {
 // guess that would move its number in a direction nobody chose.
 //
 // The router fallback is a linear scan and is only reached when the file does
-// not know the MAC, which is to say for exactly the devices it cannot contain
-// anyway. Every device the file does name -- every device this run can act on --
-// is a single map lookup away.
-func (t *deviceTable) Device(mac net.HardwareAddr) (core.Device, bool) {
+// not know the MAC. Every device the file does name -- every device an
+// operator has classified -- is a single map lookup away. The scan runs once
+// per portal request and once per containment decision, not once per event.
+func (t *deviceTable) Get(mac net.HardwareAddr) (core.Device, bool) {
 	if t == nil {
 		return core.Device{}, false
 	}
@@ -795,20 +823,6 @@ func (t *deviceTable) Device(mac net.HardwareAddr) (core.Device, bool) {
 		}
 	}
 	return core.Device{}, false
-}
-
-// containmentCandidate reports whether this run may contain mac, and returns
-// the record to judge it with.
-//
-// It answers only from the static inventory. That is the whole content of the
-// method: the router's view of a device is enough to attribute its traffic and
-// not enough to hand a person a page with a release button on it, so a device
-// it alone knows is scored and shown in reports and left alone.
-func (t *deviceTable) containmentCandidate(mac net.HardwareAddr) (core.Device, bool) {
-	if t == nil || t.inv == nil {
-		return core.Device{}, false
-	}
-	return t.inv.Get(mac)
 }
 
 // Devices returns every device the run can assess, for the periodic report.
@@ -841,10 +855,11 @@ func (t *deviceTable) Devices() []core.Device {
 // device, on which query, at what score, with which evidence.
 //
 // The address is resolved through the same table the containment predicate
-// used, so the entry names the device that was actually contained. A sinkhole
-// can only have been issued for a device the static inventory knows, so the
-// enrichment below is found; the table is still what answers, so this code
-// stays correct if that ever stops being true.
+// used, so the entry names the device that was actually contained. The lookup
+// is the same one too: the containment predicate refused to contain a device
+// the table cannot describe, so this enrichment is found whenever a sinkhole
+// was issued at all -- but the table is still what answers, so this code stays
+// correct if that ever stops being true.
 //
 // An audit write failure cannot be allowed to fail the DNS response -- the
 // device is already contained either way -- so it is reported loudly on
@@ -858,7 +873,7 @@ func recordSinkhole(auditLog *portal.Audit, t *deviceTable, eng *risk.Engine, ev
 	}
 	if t != nil && eng != nil {
 		if mac, ok := t.MACFor(ev.Src.IP); ok {
-			if dev, ok := t.Device(mac); ok {
+			if dev, ok := t.Get(mac); ok {
 				a := eng.Evaluate(dev, time.Now())
 				entry.MAC = mac.String()
 				entry.Vendor = dev.Vendor
@@ -898,7 +913,7 @@ func recordIOCBlock(auditLog *portal.Audit, t *deviceTable, store *normalize.Sto
 	if t != nil {
 		if mac, ok := t.MACFor(ev.Src.IP); ok {
 			entry.MAC = mac.String()
-			if dev, ok := t.Device(mac); ok {
+			if dev, ok := t.Get(mac); ok {
 				entry.Vendor = dev.Vendor
 				entry.Class = string(dev.Class)
 			}
@@ -1210,7 +1225,8 @@ func deviceFacingURL(device netip.Addr, bound net.Addr) string {
 //
 // It assesses every device the table knows, which under -router includes the
 // devices no file names. That is deliberate: a device being scored is how an
-// operator finds out it should be added to the inventory before it matters.
+// operator finds out it should be classified in the inventory, and under
+// -router it is also how they find out it is already being contained.
 func printReport(pipe *pipeline.Pipeline, t *deviceTable) {
 	if t == nil {
 		return

@@ -15,7 +15,7 @@ The shippable product. Everything needed to observe a network, score devices, an
 - [x] Feed pullers: ThreatFox, URLhaus, CISA KEV (SSLBL struck — its botnet C2 IP blacklist was deprecated by abuse.ch on 2025-01-03)
 - [x] Normalization with confidence, TTL, and provenance tagging
 - [x] Inventory ingest from all three router backends (VyOS 1.3 excluded — it has no API of any kind)
-- [ ] Contain devices the router alone knows: the portal's release path is still driven by the inventory file, so a router-only device is scored and reported but never contained
+- [x] Contain devices the router alone knows: the portal reads the same device table the resolver does, so a router-only device is attributed, scored, contained and released on the same terms as one an inventory file names — it simply has no class and no vendor yet, and its page says so
 - [ ] IEEE OUI vendor lookup
 - [x] Per-device risk scoring with exponential decay
 - [x] Policy tier selection with corroboration requirement
