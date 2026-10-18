@@ -59,7 +59,7 @@ jobs:
         # that it was red.
         run: |
           set -o pipefail
-          if go test ./... -count=1 -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
+          if go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
             exit 0
           fi
           grep -E '(^--- FAIL|^FAIL|WARNING: DATA RACE|^[[:space:]]*[a-zA-Z0-9_/.-]+\.go:[0-9]+)' test-output.txt \
