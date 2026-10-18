@@ -81,6 +81,13 @@ jobs:
             | head -60 | sed 's/^/::error::/' || true
           exit 1
 
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output
+          path: test-output.txt
+
       - name: Report coverage
         run: |
           echo "=== coverage ==="
