@@ -31,6 +31,7 @@ jobs:
 
       - name: Verify formatting
         run: |
+          echo "=== gofmt ==="
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
             echo "The following files are not gofmt-formatted:"
@@ -39,37 +40,41 @@ jobs:
             echo "Run: gofmt -w ."
             exit 1
           fi
+          echo "gofmt: PASS"
 
       - name: Verify modules tidy
         run: |
-          echo "Before go mod tidy:"
+          echo "=== go mod tidy ==="
+          echo "Before:"
           cat go.sum 2>/dev/null || echo "(empty)"
           go mod tidy
-          echo "After go mod tidy:"
+          echo "After:"
           cat go.sum 2>/dev/null || echo "(empty)"
-          # The '--' matters: with zero external dependencies no go.sum
-          # exists, and git treats a bare pathspec that exists nowhere as a
-          # fatal error (exit 128), which would fail this step forever.
           if ! git diff --exit-code -- go.mod go.sum; then
             echo "go.mod/go.sum are not tidy. Run: go mod tidy"
             git diff go.mod go.sum
             exit 1
           fi
+          echo "go mod tidy: PASS"
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          echo "=== go vet ==="
+          go vet ./...
+          echo "go vet: PASS"
 
       - name: Build
-        run: go build ./...
+        run: |
+          echo "=== go build ==="
+          go build ./...
+          echo "go build: PASS"
 
       - name: Test
-        # The pipeline sits in an `if` condition on purpose. GitHub runs steps
-        # under `bash -e`, which aborts a failing pipeline before the lines
-        # after it can report what failed -- so a red build used to say only
-        # that it was red.
         run: |
+          echo "=== go test ==="
           set -o pipefail
           if go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
+            echo "go test: PASS"
             exit 0
           fi
           grep -E '(^--- FAIL|^FAIL|WARNING: DATA RACE|^[[:space:]]*[a-zA-Z0-9_/.-]+\.go:[0-9]+)' test-output.txt \
@@ -77,7 +82,9 @@ jobs:
           exit 1
 
       - name: Report coverage
-        run: go tool cover -func=coverage.out | tail -n 1
+        run: |
+          echo "=== coverage ==="
+          go tool cover -func=coverage.out | tail -n 1
 
   safety-gate:
     name: safety gate
