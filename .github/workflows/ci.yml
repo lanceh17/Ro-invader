@@ -53,7 +53,19 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out
+        run: |
+          set -o pipefail
+          go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            # Surface the failure as annotations. GitHub renders these on the
+            # run page without opening the logs, which is what makes a red
+            # build diagnosable at a glance rather than only by whoever can
+            # click through to the full log.
+            grep -E '(^--- FAIL|^FAIL|WARNING: DATA RACE|^[[:space:]]*[a-zA-Z0-9_/.-]+\.go:[0-9]+)' test-output.txt \
+              | head -60 | sed 's/^/::error::/' || true
+          fi
+          exit "$status"
 
       - name: Report coverage
         run: go tool cover -func=coverage.out | tail -n 1
