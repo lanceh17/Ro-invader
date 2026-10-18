@@ -22,6 +22,7 @@ import (
 // rules through a real vendor mock would make every change to a VyOS table's
 // column count look like a regression in the Client, and vice versa.
 type staticSource struct {
+	mu     sync.Mutex
 	name   string
 	leases []Lease
 	err    error
@@ -34,7 +35,14 @@ type staticSource struct {
 
 func (s *staticSource) Name() string { return s.name }
 
+// Leases guards its call counter, because the concurrency test drives Poll
+// from two goroutines at once. A mock that is not safe to call from several
+// pollers makes the race detector report the test's own bug and hides the one
+// it was written to find.
 func (s *staticSource) Leases(context.Context) ([]Lease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.calls++
 	if s.errAfter > 0 {
 		if s.calls > s.errAfter {
