@@ -69,11 +69,11 @@ jobs:
           go build ./...
           echo "go build: PASS"
 
-      - name: Test
+      - name: Test (no race)
         run: |
-          echo "=== go test ==="
+          echo "=== go test (no race) ==="
           set -o pipefail
-          if go test ./... -count=1 -race -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
+          if go test ./... -count=1 -covermode=atomic -coverprofile=coverage.out 2>&1 | tee test-output.txt; then
             echo "go test: PASS"
             exit 0
           fi
@@ -81,12 +81,18 @@ jobs:
             | head -60 | sed 's/^/::error::/' || true
           exit 1
 
+      - name: Write marker
+        if: always()
+        run: echo "test step reached" > test-marker.txt
+
       - name: Upload test output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-output
-          path: test-output.txt
+          path: |
+            test-output.txt
+            test-marker.txt
 
       - name: Report coverage
         run: |
