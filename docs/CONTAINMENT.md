@@ -126,7 +126,7 @@ A quarantined device's DNS resolves through us authoritatively, which means we c
 
 ## Measuring R0
 
-Claims about containment efficacy should be measurable. The lab in `tests/lab/` exists to produce a number.
+Claims about containment efficacy should be measurable. The lab in `agent/tests/lab/` exists to produce a number.
 
 The lab stands up a containerized multi-segment network, seeds a propagating agent that moves an artifact between hosts and beacons on a schedule, and counts successful propagation events per infected host over a fixed observation window.
 

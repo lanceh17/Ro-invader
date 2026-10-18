@@ -40,7 +40,7 @@ In passive-only mode there is no other guaranteed identity source. Every device 
 └─────┬─────┘  answers  └──────────┘                  │  detect  ││
       │                                                │ (pure)   ││
       │                                                └────┬─────┘│
-┌─────┴──────┐  leases, ARP, assoc  ┌──────────┐           │      │
+┌─────┴──────┐  leases, ARP         ┌──────────┐           │      │
 │  Router    │─────────────────────▶│  router  │           ▼      │
 │  (ours)    │◀─────────────────────│  ingest  │     ┌──────────┐│
 └────────────┘   nft rule push      └──────────┘     │   risk   ││
@@ -75,7 +75,7 @@ agent/
     ├── ingest/
     │   ├── suricata/          EVE JSON reader (file or unix socket tail)
     │   ├── dns/               resolver query log
-    │   ├── router/            DHCP leases, ARP, 802.11 assoc via vendor API
+    │   ├── router/            DHCP leases + ARP over each vendor's HTTP API (802.11 assoc struck — not implemented)
     │   └── oui/               IEEE OUI vendor lookup
     ├── normalize/             feeds → normalized IoCs with TTL + confidence
     ├── detect/                pure-function signal matchers
@@ -172,7 +172,7 @@ Three backends, one contract.
 
 | Backend | Quarantine mechanism | Inventory source | Notes |
 |---|---|---|---|
-| **OpenWrt** | `firewall4` nftables sets via `uci` | `ubus call dhcp ipv4leases`, `iwinfo assoclist` | Largest install base. `ubus` is awkward for service accounts; evaluate `openwrt-iac/uapi` (MIT) as an optional layer. |
+| **OpenWrt** | `firewall4` nftables sets via `uci` | `ubus` over HTTP: `file read` of `/tmp/dhcp.leases`, plus `dhcp ipv6leases` | Largest install base. `ubus` is awkward for service accounts; evaluate `openwrt-iac/uapi` (MIT) as an optional layer. |
 | **VyOS** | `ipset` group membership via `/configure` | DHCP + ARP | Best bulk-IoC primitive — members change without touching rules, so no firewall reload and no traffic gap. |
 | **OPNsense** | REST `POST /api/firewall/filter/apply` | REST lease and ARP endpoints | Cleanest documented API. **Constraint:** its automation filter only surfaces rules created within it, so our tool must own every rule it manages. |
 
@@ -204,7 +204,7 @@ Suricata with a full Emerging Threats rule set needs multiple gigabytes of RAM. 
 
 ## What is deliberately absent
 
-- **No outbound telemetry.** Nothing phones home. Feed polling is the only outbound traffic, and it is to the public abuse.ch and CISA endpoints.
+- **No outbound telemetry.** Nothing phones home. Outbound traffic goes to the public abuse.ch and CISA endpoints and to the router you administer, and nowhere else.
 - **No model weights, no inference engine, no agentic loop.** This is a rules-and-correlation system.
 - **No remote command execution.** Anywhere.
 - **No active scanning.** Not even as an option.

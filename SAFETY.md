@@ -2,7 +2,7 @@
 
 R0-Invader is a defensive tool. This document records the commitments that make that true in a way that can be checked against the code, not merely asserted in a README.
 
-**Last updated:** 2026-10-17
+**Last updated:** 2026-10-18
 
 ---
 
@@ -14,7 +14,7 @@ Why it is structural rather than configurable:
 
 - The actuator interface exposes no operation that reaches a target host. Its verbs are `Authoritative`, `Quarantine`, `Release`, `BlockNet`, `BlockDomain`, and `Health`. None of them transmit to a managed device.
 - The sensing path is entirely reactive: DNS queries arriving at our resolver, flow records emitted by the router, and inventory state pushed by the router's own API.
-- The one outbound request the control plane makes is fetching the threat-intel feeds named in section 4, and it is the only exception to the rule above. It is addressed solely to those named providers, carries nothing derived from a managed host, and runs only when `-feeds` enables it: a website request like any browser's, never a packet aimed at anything on the managed network.
+- The only outbound requests the control plane makes go to the router you administer — reading its inventory state, and pushing rules — or to the threat-intel feeds named in section 4. The feed traffic is the only exception to the rule above: it carries nothing derived from a managed host and runs only when `-feeds` enables it, so it is a website request like any browser's, never a packet aimed at anything on the managed network.
 - There is no code path that generates a network request on behalf of a scanned host.
 
 A tool that actively scans creates ambiguity under laws such as the U.S. Computer Fraud and Abuse Act, even when the scanned network is your own, because the scanner's behavior is indistinguishable from an attacker's once it leaves your machine. Passive-only eliminates that question rather than arguing it. It also removes the failure mode of a scanner breaking a fragile embedded device, which is a real and common operational hazard on networks with IoT hardware.

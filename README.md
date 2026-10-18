@@ -128,7 +128,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Proving it works
 
-We are not going to ask you to take containment efficacy on faith. The lab in `tests/lab/` stands up a containerized multi-segment network and measures R0 with and without containment enabled. The number it produces is the metric this project is judged on.
+We are not going to ask you to take containment efficacy on faith. The lab in `agent/tests/lab/` stands up a containerized multi-segment network and measures R0 with and without containment enabled. The number it produces is the metric this project is judged on.
 
 ---
 
@@ -180,6 +180,10 @@ Note the last line: the camera scores above the `restrict` threshold (30) but is
 The score above is reproducible: `analyze` evaluates each signal at the capture's own end rather than at the moment you run it, so the same EVE file always yields the same report. Re-running it against a modified or newer capture is what changes the number.
 
 The inventory file maps IPs to MACs and device classes; without it, events cannot be attributed and no signal can name a device. See [docs/ROADMAP.md](docs/ROADMAP.md) for what ships next.
+
+The inventory does not have to be a file. On `serve` it can instead be read live from the router over each vendor's own HTTP API: DHCP leases on all three backends, plus the ARP table on VyOS and OPNsense. The router already holds the mapping, so an address that moves is reflected without regenerating a JSON file. A backend that stops answering leaves the last known table in place rather than clearing it — one unreachable router would otherwise silently blind attribution for every device it had ever seen. VyOS 1.3 has no HTTP API at all and is unsupported. See [docs/ROADMAP.md](docs/ROADMAP.md); `serve -help` names the flag that turns this on.
+
+One limit is deliberate. A device the router alone knows is scored and reported like any other, but is never contained: the portal's release button is driven by the inventory file, and containing a device whose page has no button on it would send its lookups somewhere nobody could free it from. Live inventory widens who gets *watched* today; acting on a device nobody has classified is the next piece of work, not this one.
 
 `serve` runs the same pipeline live on DNS traffic. Queries are attributed from the inventory, scored as they arrive, and a device that reaches the quarantine tier has its lookups answered with the remediation portal — a walled garden rather than a cut-off, so a contained device can still reach its vendor's patch server. Nothing else is actuated, and the engine's corroboration rule still gates everything: a single signal never contains anything.
 

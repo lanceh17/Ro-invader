@@ -14,7 +14,8 @@ The shippable product. Everything needed to observe a network, score devices, an
 - [x] DNS resolver (with query logging, per-device policy decisions, and walled-garden sinkholes — `serve`)
 - [x] Feed pullers: ThreatFox, URLhaus, CISA KEV (SSLBL struck — its botnet C2 IP blacklist was deprecated by abuse.ch on 2025-01-03)
 - [x] Normalization with confidence, TTL, and provenance tagging
-- [ ] Inventory ingest from all three router backends
+- [x] Inventory ingest from all three router backends (VyOS 1.3 excluded — it has no API of any kind)
+- [ ] Contain devices the router alone knows: the portal's release path is still driven by the inventory file, so a router-only device is scored and reported but never contained
 - [ ] IEEE OUI vendor lookup
 - [x] Per-device risk scoring with exponential decay
 - [x] Policy tier selection with corroboration requirement
@@ -24,7 +25,7 @@ The shippable product. Everything needed to observe a network, score devices, an
 - [x] Remediation portal with per-device reason codes and release action
 - [ ] Action audit log
 - [ ] Docker Compose deployment
-- [ ] R0 measurement lab in `tests/lab/`
+- [ ] R0 measurement lab in `agent/tests/lab/`
 
 **Exit criteria:** the lab demonstrates measured R0 below 1 with containment enabled, against a control run above 1. That number is the v0.1 release gate, not a passing test suite.
 

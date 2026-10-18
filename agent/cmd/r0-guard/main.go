@@ -5,6 +5,7 @@
 //   - `analyze` reads a Suricata EVE file, normalizes it, runs the detectors,
 //     scores each device with exponential decay, and reports the recommended
 //     containment tier. It reads and reports only.
+//
 //   - `serve` runs the DNS resolver wired to that same pipeline: queries are
 //     attributed, scored, and a device whose assessment reaches the quarantine
 //     tier has its lookups answered with the remediation portal, served by
@@ -14,6 +15,13 @@
 //     append-only audit log. That walled garden is the one containment action
 //     this binary takes, and it is gated by the risk engine's corroboration
 //     rule, so it reaches only devices that crossed the published threshold.
+//
+//   - `serve` can read the device table from the router itself, over that
+//     router's own HTTP API: DHCP leases on all three backends, plus the
+//     neighbour table where the vendor publishes one. An address that moves
+//     is then reflected without regenerating a file. It is a read of state the
+//     router offers — the router is asked what it knows, and nothing is written
+//     and nothing is executed on it.
 //
 // Pushing firewall rules to a router is still in progress; see
 // docs/ROADMAP.md. Nothing here contacts a managed device directly.
@@ -34,6 +42,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -42,6 +51,7 @@ import (
 	"github.com/lanceh17/Ro-invader/agent/internal/core"
 	"github.com/lanceh17/Ro-invader/agent/internal/dns"
 	"github.com/lanceh17/Ro-invader/agent/internal/feeds"
+	"github.com/lanceh17/Ro-invader/agent/internal/ingest/router"
 	"github.com/lanceh17/Ro-invader/agent/internal/ingest/suricata"
 	"github.com/lanceh17/Ro-invader/agent/internal/inventory"
 	"github.com/lanceh17/Ro-invader/agent/internal/normalize"
@@ -91,6 +101,13 @@ Serve flags:
   -ioc-ttl <dur>       how long one refresh keeps indicators active (default 72h)
   -ioc-min-confidence <n>  lowest indicator confidence that can block a name
                        (default 75)
+  -router <list>       comma-separated router backends to read the device table
+                       from: openwrt, vyos, opnsense (default off)
+  -router-url <url>    router base URL, e.g. http://192.168.1.1 (required with -router)
+  -router-user <name>  OpenWrt ubus account allowed to read the lease table
+  -router-pass <secret>  OpenWrt password; OPNsense API secret
+  -router-key <apikey> VyOS or OPNsense API key; falls back to R0_ROUTER_KEY
+  -router-interval <dur>  how often the router's tables are read (default 5m)
 
 Status:
   v0.1 containment core is in progress. analyze is read-only. serve runs the
@@ -99,6 +116,14 @@ Status:
   firewall rules to a router. With -feeds it also answers NXDOMAIN for uncontained
   devices querying names published by the enabled threat feeds; that is off
   unless -feeds is given, and -observe disables it even then. See docs/ROADMAP.md.
+
+  With -router the router decides which device an address belongs to, so a
+  lease that moved is reflected without editing a file. -inventory stays the
+  source of each device's class and vendor, and a device it does not name is
+  scored and reported but never contained — the portal's release page is built
+  from that file, and containing a device with no way to release it is the one
+  outcome worse than containing nothing. Reading the router is still only a
+  read.
 
 This tool is passive by architecture: it never probes, scans, or transmits
 to a managed device. See SAFETY.md.
@@ -280,6 +305,12 @@ func runServe(args []string) error {
 	feedInterval := fs.Duration("feed-interval", 6*time.Hour, "how often enabled feeds refresh")
 	iocTTL := fs.Duration("ioc-ttl", 72*time.Hour, "how long one feed refresh keeps its indicators active")
 	iocMinConfidence := fs.Int("ioc-min-confidence", 75, "lowest indicator confidence that can block a DNS answer")
+	routerList := fs.String("router", "", "comma-separated router backends to read the device table from: openwrt, vyos, opnsense; empty keeps attribution static")
+	routerURL := fs.String("router-url", "", "router base URL, e.g. http://192.168.1.1 (required with -router)")
+	routerUser := fs.String("router-user", "", "OpenWrt ubus account allowed to read the lease table")
+	routerPass := fs.String("router-pass", "", "OpenWrt password, or the API secret half of an OPNsense key/secret pair")
+	routerKey := fs.String("router-key", "", "VyOS or OPNsense API key; falls back to R0_ROUTER_KEY")
+	routerInterval := fs.Duration("router-interval", 5*time.Minute, "how often the router's lease and neighbour tables are read")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -308,22 +339,86 @@ func runServe(args []string) error {
 		}
 	}
 
+	// The router configuration is validated on the same terms, and for the
+	// same reason: an unknown backend name, or a missing URL, must stop the
+	// run while the message is still on the operator's screen rather than
+	// becoming a resolver whose device table is quietly empty.
+	//
+	// The order is most-fundamental first: a backend that does not exist is
+	// reported before the URL it would have needed, which is reported before
+	// the interval it would have used, which is reported before the
+	// credentials any particular backend turns out to want. The interval is
+	// checked against the request rather than against the backends that
+	// survived credential filtering, so naming a keyed backend with no key
+	// still fails loudly on a bad interval instead of quietly accepting one
+	// and then never reading anything.
+	routerNames, err := parseRouterList(*routerList)
+	if err != nil {
+		return err
+	}
+	if len(routerNames) > 0 {
+		if strings.TrimSpace(*routerURL) == "" {
+			return fmt.Errorf("serve: -router-url is required when -router is set")
+		}
+		if *routerInterval <= 0 {
+			return fmt.Errorf("serve: -router-interval must be positive, got %s", *routerInterval)
+		}
+	}
+	routerSources, skippedRouters, err := buildRouterSources(routerNames, router.Config{
+		BaseURL:  strings.TrimSpace(*routerURL),
+		Username: strings.TrimSpace(*routerUser),
+		Password: *routerPass,
+		Token:    routerAPIKey(*routerKey),
+	})
+	if err != nil {
+		return err
+	}
+	routerRequested := len(routerNames) > 0
+
+	// Build the router client only when a backend actually survived. Passing
+	// an empty Sources list to router.New would quietly get a default OpenWrt
+	// source -- a backend the operator did not ask for, pointed at a URL they
+	// may not have intended to authenticate against, failing once per poll.
+	var routerClient *router.Client
+	if len(routerSources) > 0 {
+		routerClient, err = router.New(router.Config{
+			BaseURL:  strings.TrimSpace(*routerURL),
+			Username: strings.TrimSpace(*routerUser),
+			Password: *routerPass,
+			Token:    routerAPIKey(*routerKey),
+			Sources:  routerSources,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	// Load the inventory before binding. Without it nothing can be attributed,
 	// so no signal can fire and nothing will ever be contained -- a resolver
 	// that silently forwards everything would look identical to one that is
 	// working. Say so rather than appearing broken.
 	var inv *inventory.Inventory
-	var attr pipeline.Attributor
 	if *invPath != "" {
 		loaded, err := inventory.Load(*invPath)
 		if err != nil {
 			return err
 		}
 		inv = loaded
-		attr = loaded
+	} else if routerClient != nil {
+		// The router names devices and addresses, so attribution and scoring
+		// work without this file. Containment does not, and the reason is
+		// structural rather than a missing flag: a device needs a class and a
+		// portal page before it can be acted on, and only the file has both.
+		fmt.Fprintln(os.Stderr, "warning: no -inventory given; the router supplies devices and addresses, so queries are attributed and scored, but nothing can be contained -- see -inventory")
 	} else {
 		fmt.Fprintln(os.Stderr, "warning: no -inventory given; queries cannot be attributed, so no signals will fire and nothing will be contained")
 	}
+
+	// One table for the whole run. Everything downstream -- the detectors, the
+	// containment predicate, the audit lines, the periodic report -- resolves
+	// addresses and devices through it, so they cannot disagree about which
+	// device an event belongs to.
+	table := newDeviceTable(inv, routerClient)
 
 	var gardenDomains []string
 	for _, g := range strings.Split(*garden, ",") {
@@ -361,6 +456,33 @@ func runServe(args []string) error {
 		fmt.Fprintf(os.Stderr, "r0-guard: feed %s skipped: no Auth-Key (set R0_ABUSECH_KEY)\n", name)
 	}
 
+	// Same rule for the router backends: a backend that needs an API key and
+	// did not get one is skipped and named, and the run continues with
+	// whatever else is configured.
+	for _, name := range skippedRouters {
+		fmt.Fprintf(os.Stderr, "r0-guard: router backend %s skipped: no API key (set %s or pass -router-key)\n", name, routerKeyEnv)
+	}
+	// Every backend the operator named was skipped, so nothing is being polled.
+	// Attribution has quietly fallen back to whatever -inventory holds, and
+	// saying so is the difference between a router that has no devices and a
+	// router that is not being read.
+	if routerRequested && routerClient == nil {
+		fmt.Fprintln(os.Stderr, "r0-guard: no router backend is active; the device table is static only")
+	}
+
+	// Both sources configured is a supported configuration, not a conflict, so
+	// it is spelled out rather than resolved silently. The router is
+	// authoritative for which device an address belongs to -- a lease that
+	// moved this morning is a fact the file cannot know -- and the file
+	// remains authoritative for classification and vendor, and for which
+	// devices exist as far as containment and release are concerned.
+	if routerClient != nil && inv != nil {
+		fmt.Fprintln(os.Stderr,
+			"r0-guard: -router and -inventory are both set: the router decides which device an address belongs to;\n"+
+				"          -inventory supplies each device's class and vendor, and names the devices that can be contained and released.\n"+
+				"          A device only the router has seen is attributed, scored and reported, but never contained.")
+	}
+
 	// The indicator store exists even with no feeds: an empty store is the
 	// no-blocklist default, and one code path serves both cases. -observe
 	// keeps the store populated for provenance and counts but disables the
@@ -379,7 +501,7 @@ func runServe(args []string) error {
 	}
 
 	engine := risk.New(risk.WithHalfLife(*halfLife))
-	pipe := pipeline.New(attr, engine)
+	pipe := pipeline.New(table, engine)
 
 	// The containment predicate is driven by the engine, not by a flag this
 	// command owns, so there is exactly one source of truth for a device's
@@ -387,7 +509,7 @@ func runServe(args []string) error {
 	// because "never contain" should not depend on getting a number right.
 	// The release store sits inside the predicate: a released device is
 	// contained by no one until its time box runs out.
-	quarantined := quarantineFunc(inv, engine, exceptions)
+	quarantined := quarantineFunc(table, engine, exceptions)
 	if *observe {
 		quarantined = func(netip.Addr) bool { return false }
 	}
@@ -400,7 +522,13 @@ func runServe(args []string) error {
 	var portalErrc chan error
 	if *portalHTTP != "" {
 		ps, err := portal.New(portal.Config{
-			Engine:      engine,
+			Engine: engine,
+			// The static inventory, not the table: portal.Config.Inventory is
+			// typed as *inventory.Inventory, and the release button it renders
+			// has to look the device up in the same file the operator edits.
+			// A device the router has seen but that file does not name is
+			// therefore never contained, so this page is never asked about
+			// one -- see deviceTable and containmentCandidate.
 			Inventory:   inv,
 			Garden:      gardenDomains,
 			Remediation: remediation,
@@ -446,14 +574,14 @@ func runServe(args []string) error {
 			// that matter when something is actually acted on.
 			switch action {
 			case dns.ActionSinkhole:
-				recordSinkhole(auditLog, inv, engine, ev)
+				recordSinkhole(auditLog, table, engine, ev)
 				fmt.Fprintf(os.Stderr, "r0-guard: sinkholed %s for %s\n", ev.QueryName, ev.Src.IP)
 			case dns.ActionNXDomain:
 				// NXDOMAIN has exactly one producer: the Blocked predicate
 				// consulting the indicator store. The matching indicator is
 				// re-read here for the audit line; the decision itself was
 				// already made in Decide.
-				recordIOCBlock(auditLog, inv, iocStore, ev)
+				recordIOCBlock(auditLog, table, iocStore, ev)
 				fmt.Fprintf(os.Stderr, "r0-guard: blocked %s for %s (threat intel)\n", ev.QueryName, ev.Src.IP)
 			}
 			pipe.Ingest(ev)
@@ -489,6 +617,16 @@ func runServe(args []string) error {
 		go feedLoop(ctx, pullers, iocStore, *feedInterval, *iocTTL)
 	}
 
+	// The router is polled here for the same reason, and it matters more: the
+	// first request to a router can sit behind its own boot, a slow WAN, or a
+	// captive login page, and none of that should hold up a resolver that is
+	// already answering. Until the first poll lands, attribution falls back to
+	// whatever -inventory holds, which is the old behavior rather than none of
+	// it. The loop polls once immediately and then on the interval.
+	if routerClient != nil {
+		go routerLoop(ctx, routerClient, *routerInterval)
+	}
+
 	if *reportEvery > 0 {
 		go func() {
 			t := time.NewTicker(*reportEvery)
@@ -498,7 +636,7 @@ func runServe(args []string) error {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					printReport(pipe, inv)
+					printReport(pipe, table)
 				}
 			}
 		}()
@@ -530,7 +668,7 @@ func runServe(args []string) error {
 		<-portalErrc // the Serve goroutine finishes here
 	}
 
-	printReport(pipe, inv)
+	printReport(pipe, table)
 	return nil
 }
 
@@ -545,19 +683,29 @@ func runServe(args []string) error {
 // signal -- however large -- from sinkholing anything. The release store is the
 // one documented override: an operator's time-boxed decision to let a specific
 // device back on, checked on every query so it expires by itself.
-func quarantineFunc(inv *inventory.Inventory, eng *risk.Engine, exc *portal.Exceptions) func(netip.Addr) bool {
+//
+// The address is resolved through the table rather than through one source, so
+// the device judged here is the device the detectors scored. Resolving through
+// a different table than the one attribution used is how a decision gets
+// recorded against one MAC and executed against another.
+func quarantineFunc(t *deviceTable, eng *risk.Engine, exc *portal.Exceptions) func(netip.Addr) bool {
 	return func(ip netip.Addr) bool {
-		if inv == nil || eng == nil {
+		if t == nil || eng == nil {
 			return false
 		}
-		mac, ok := inv.MACFor(ip)
+		mac, ok := t.MACFor(ip)
 		if !ok {
 			return false
 		}
 		if _, released := exc.Active(mac); released {
 			return false
 		}
-		dev, ok := inv.Get(mac)
+		// Static inventory only, and the reason is the release page: a device
+		// this run could contain but the portal cannot find is a device whose
+		// lookups are redirected to a page saying it is not contained, with no
+		// button to change that. Failing closed here costs an uncontained
+		// device; the other way costs one that cannot be released at all.
+		dev, ok := t.containmentCandidate(mac)
 		if !ok {
 			return false
 		}
@@ -565,22 +713,152 @@ func quarantineFunc(inv *inventory.Inventory, eng *risk.Engine, exc *portal.Exce
 	}
 }
 
+// deviceTable is this run's view of the network: it resolves an address to a
+// device for attribution, scoring, and containment.
+//
+// It exists because there are now two sources of that answer, and one
+// consumer that must not be allowed to mix them. A run can read the router
+// live, can read a static inventory, or both, and the router wins on
+// attribution -- a lease that moved this morning is a fact a file cannot know,
+// and attributing to the previous holder is how the wrong camera gets
+// quarantined. The static file still supplies class and vendor, because
+// classification drives the score's weighting and no router publishes one.
+//
+// Containment is the one place the two are deliberately not interchangeable,
+// and the asymmetry is a type boundary rather than a preference:
+// portal.Config.Inventory is a *inventory.Inventory, so a device discovered by
+// the router alone has no page that can show it and therefore no release
+// button. Such a device is attributed, scored and reported, and is never
+// contained. See containmentCandidate.
+//
+// Both fields may be nil, in which case nothing can be attributed -- the same
+// honest nothing the run had before a router existed.
+type deviceTable struct {
+	inv    *inventory.Inventory
+	router *router.Client
+}
+
+// newDeviceTable wires a table. Both arguments are optional.
+func newDeviceTable(inv *inventory.Inventory, rtr *router.Client) *deviceTable {
+	return &deviceTable{inv: inv, router: rtr}
+}
+
+// MACFor satisfies pipeline.Attributor: which device owns this address.
+//
+// The router is asked first and the static inventory second, in that order and
+// not as a merge. A live lease and a file disagree in exactly one situation --
+// the file is stale -- and in that situation the live one is the correct one.
+// Falling through to the file keeps an address working during the window
+// before the first poll lands, which is the difference between "attribution
+// starts a little late" and "attribution does not exist".
+func (t *deviceTable) MACFor(ip netip.Addr) (net.HardwareAddr, bool) {
+	if t == nil {
+		return nil, false
+	}
+	if t.router != nil {
+		if mac, ok := t.router.MACFor(ip); ok {
+			return mac, true
+		}
+	}
+	if t.inv != nil {
+		return t.inv.MACFor(ip)
+	}
+	return nil, false
+}
+
+// Device returns the record to score for mac: the static inventory's when it
+// has one, otherwise the router's.
+//
+// The preference is the enrichment rule above. A router-only device carries
+// core.ClassUnknown, which the risk engine scores at the neutral multiplier --
+// an uncategorized device is weighted honestly rather than being handed a
+// guess that would move its number in a direction nobody chose.
+//
+// The router fallback is a linear scan and is only reached when the file does
+// not know the MAC, which is to say for exactly the devices it cannot contain
+// anyway. Every device the file does name -- every device this run can act on --
+// is a single map lookup away.
+func (t *deviceTable) Device(mac net.HardwareAddr) (core.Device, bool) {
+	if t == nil {
+		return core.Device{}, false
+	}
+	if t.inv != nil {
+		if dev, ok := t.inv.Get(mac); ok {
+			return dev, true
+		}
+	}
+	if t.router != nil {
+		for _, dev := range t.router.Devices() {
+			if dev.MAC.String() == mac.String() {
+				return dev, true
+			}
+		}
+	}
+	return core.Device{}, false
+}
+
+// containmentCandidate reports whether this run may contain mac, and returns
+// the record to judge it with.
+//
+// It answers only from the static inventory. That is the whole content of the
+// method: the router's view of a device is enough to attribute its traffic and
+// not enough to hand a person a page with a release button on it, so a device
+// it alone knows is scored and shown in reports and left alone.
+func (t *deviceTable) containmentCandidate(mac net.HardwareAddr) (core.Device, bool) {
+	if t == nil || t.inv == nil {
+		return core.Device{}, false
+	}
+	return t.inv.Get(mac)
+}
+
+// Devices returns every device the run can assess, for the periodic report.
+// Static entries come first so a device named by both sources is reported from
+// the file, with its class attached.
+func (t *deviceTable) Devices() []core.Device {
+	if t == nil {
+		return nil
+	}
+	var out []core.Device
+	seen := map[string]bool{}
+	if t.inv != nil {
+		for _, dev := range t.inv.Devices() {
+			seen[dev.MAC.String()] = true
+			out = append(out, dev)
+		}
+	}
+	if t.router != nil {
+		for _, dev := range t.router.Devices() {
+			if seen[dev.MAC.String()] {
+				continue
+			}
+			out = append(out, dev)
+		}
+	}
+	return out
+}
+
 // recordSinkhole writes the audit line for one containment decision: which
 // device, on which query, at what score, with which evidence.
+//
+// The address is resolved through the same table the containment predicate
+// used, so the entry names the device that was actually contained. A sinkhole
+// can only have been issued for a device the static inventory knows, so the
+// enrichment below is found; the table is still what answers, so this code
+// stays correct if that ever stops being true.
 //
 // An audit write failure cannot be allowed to fail the DNS response -- the
 // device is already contained either way -- so it is reported loudly on
 // stderr instead of swallowed. ARCHITECTURE.md makes the log not optional;
 // this is the loud part.
-func recordSinkhole(auditLog *portal.Audit, inv *inventory.Inventory, eng *risk.Engine, ev core.NormalizedEvent) {
+func recordSinkhole(auditLog *portal.Audit, t *deviceTable, eng *risk.Engine, ev core.NormalizedEvent) {
 	entry := portal.AuditEntry{
 		Action: "sinkhole",
 		IPs:    []string{ev.Src.IP.String()},
 		Query:  ev.QueryName,
 	}
-	if inv != nil && eng != nil {
-		if mac, ok := inv.MACFor(ev.Src.IP); ok {
-			if dev, ok := inv.Get(mac); ok {
+	if t != nil && eng != nil {
+		if mac, ok := t.MACFor(ev.Src.IP); ok {
+			if dev, ok := t.Device(mac); ok {
 				a := eng.Evaluate(dev, time.Now())
 				entry.MAC = mac.String()
 				entry.Vendor = dev.Vendor
@@ -606,16 +884,21 @@ func recordSinkhole(auditLog *portal.Audit, inv *inventory.Inventory, eng *risk.
 // blocklist, not from the device's risk score, and filling those fields with
 // engine numbers would make the audit imply corroboration the blocklist
 // never had.
-func recordIOCBlock(auditLog *portal.Audit, inv *inventory.Inventory, store *normalize.Store, ev core.NormalizedEvent) {
+//
+// The MAC comes from the table, so a device the router has learned about is
+// named here even when no inventory file describes it -- this action contains
+// nothing, and refusing to record who asked would be the wrong trade. Vendor
+// and class stay empty for such a device, which is the truth.
+func recordIOCBlock(auditLog *portal.Audit, t *deviceTable, store *normalize.Store, ev core.NormalizedEvent) {
 	entry := portal.AuditEntry{
 		Action: "ioc-block",
 		IPs:    []string{ev.Src.IP.String()},
 		Query:  ev.QueryName,
 	}
-	if inv != nil {
-		if mac, ok := inv.MACFor(ev.Src.IP); ok {
-			if dev, ok := inv.Get(mac); ok {
-				entry.MAC = mac.String()
+	if t != nil {
+		if mac, ok := t.MACFor(ev.Src.IP); ok {
+			entry.MAC = mac.String()
+			if dev, ok := t.Device(mac); ok {
 				entry.Vendor = dev.Vendor
 				entry.Class = string(dev.Class)
 			}
@@ -731,6 +1014,149 @@ func pullAll(ctx context.Context, pullers []feeds.Puller, store *normalize.Store
 	}
 }
 
+// validRouters lists the router backends serve can poll, in the order -router
+// parses them.
+var validRouters = []string{"openwrt", "vyos", "opnsense"}
+
+// routerKeyEnv is where a router API key comes from when -router-key is not
+// given. A command line is readable by every other process on the host and
+// survives in shell history; an environment variable does not. The flag is
+// still honored, for the case where the daemon is supervised by something that
+// hands it a prepared environment anyway.
+const routerKeyEnv = "R0_ROUTER_KEY"
+
+// routerAPIKey resolves the API key: the flag if given, R0_ROUTER_KEY
+// otherwise. The flag wins so an operator can override a key inherited from a
+// shell profile without unsetting it first.
+func routerAPIKey(given string) string {
+	if k := strings.TrimSpace(given); k != "" {
+		return k
+	}
+	return strings.TrimSpace(os.Getenv(routerKeyEnv))
+}
+
+// routerNeedsKey reports whether a backend authenticates with an API key.
+// OpenWrt authenticates with a ubus username and password pair, so a missing
+// key is never its problem and it is never skipped for one.
+func routerNeedsKey(name string) bool {
+	switch name {
+	case "vyos", "opnsense":
+		return true
+	default:
+		return false
+	}
+}
+
+// parseRouterList turns the -router list into backend names.
+//
+// It is a separate step because the checks that follow it need the names
+// before anything is built: a backend that does not exist has to be reported
+// as such rather than as the missing BaseURL its constructor would complain
+// about. Names are lowercased, trimmed, and de-duplicated, first spelling
+// first, so "-router opnsense" and "-router OpenWrt, opnsense" both give the
+// same backends in the same order.
+func parseRouterList(list string) ([]string, error) {
+	var names []string
+	seen := map[string]bool{}
+	for _, n := range strings.Split(list, ",") {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+
+	for _, n := range names {
+		if !slices.Contains(validRouters, n) {
+			return nil, fmt.Errorf("serve: unknown router %q (valid: %s)", n, strings.Join(validRouters, ", "))
+		}
+	}
+	return names, nil
+}
+
+// buildRouterSources turns parsed backend names into sources, using cfg for
+// everything but the choice of backend.
+//
+// A backend whose credential is missing is skipped and reported rather than
+// failing the run: naming three backends and forgetting one key still leaves
+// two working ones, and a partial device table beats a daemon that refuses to
+// start. This is the same trade buildPullers makes for a missing Auth-Key.
+func buildRouterSources(names []string, cfg router.Config) ([]router.Source, []string, error) {
+	var sources []router.Source
+	var skipped []string
+	for _, n := range names {
+		// Credential gate before construction, so a missing key reads as a
+		// skip here exactly as a missing Auth-Key does for a keyed feed.
+		if routerNeedsKey(n) && cfg.Token == "" {
+			skipped = append(skipped, n)
+			continue
+		}
+		var (
+			src router.Source
+			err error
+		)
+		switch n {
+		case "openwrt":
+			src, err = router.NewOpenWrt(cfg)
+		case "vyos":
+			src, err = router.NewVyOS(cfg)
+		case "opnsense":
+			src, err = router.NewOPNsense(cfg)
+		default:
+			// Unreachable: parseRouterList has already rejected any name
+			// outside validRouters. Kept rather than omitted because the
+			// constructors and this list have to be edited together, and a
+			// silently empty case would be the wrong way to discover that.
+			return nil, nil, fmt.Errorf("serve: unknown router %q (valid: %s)", n, strings.Join(validRouters, ", "))
+		}
+		// A backend that cannot even be constructed -- no username for
+		// OpenWrt, no API secret for OPNsense -- is a hard error rather than a
+		// skip. There is nothing to fall back to: the credential exists and
+		// was not supplied, and continuing would poll a backend that can only
+		// fail on every cycle.
+		if err != nil {
+			return nil, nil, fmt.Errorf("serve: -router %s: %w", n, err)
+		}
+		sources = append(sources, src)
+	}
+	return sources, skipped, nil
+}
+
+// routerLoop refreshes the device table from the router: one poll immediately,
+// then on the interval, until ctx is canceled.
+func routerLoop(ctx context.Context, c *router.Client, interval time.Duration) {
+	pollRouter(ctx, c)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			pollRouter(ctx, c)
+		}
+	}
+}
+
+// pollRouter runs one refresh cycle.
+//
+// An error is reported and the loop continues, because the client's contract
+// is that a failed poll never removes what an earlier one learned: a router
+// that reboots mid-run degrades to a stale table, which misattributes only
+// addresses nobody re-claims, rather than to no table at all, where every
+// event would become unattributable and every signal would stop firing with no
+// error anywhere to show for it.
+func pollRouter(ctx context.Context, c *router.Client) {
+	err := c.Poll(ctx)
+	// A cancellation is how the loop is meant to end, not a fault to report.
+	if err != nil && ctx.Err() == nil {
+		fmt.Fprintf(os.Stderr, "r0-guard: router refresh failed: %v (leases learned earlier stay active)\n", err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "r0-guard: router: %d devices known\n", c.Len())
+}
+
 // releaseToken returns the operator's release token, generating a random one
 // when none was given. A per-run random token printed to the operator's
 // terminal is the right default: nothing to forget to change, nothing in
@@ -781,11 +1207,19 @@ func deviceFacingURL(device netip.Addr, bound net.Addr) string {
 // daemon's scoring stays visible without waiting for containment to happen.
 // Sinkhole logs go to stderr, so the two never interleave in a way that is hard
 // to read when piping output.
-func printReport(pipe *pipeline.Pipeline, inv *inventory.Inventory) {
-	if inv == nil || inv.Len() == 0 {
+//
+// It assesses every device the table knows, which under -router includes the
+// devices no file names. That is deliberate: a device being scored is how an
+// operator finds out it should be added to the inventory before it matters.
+func printReport(pipe *pipeline.Pipeline, t *deviceTable) {
+	if t == nil {
 		return
 	}
-	ranked := pipe.Engine().Ranked(inv.Devices(), time.Now())
+	devices := t.Devices()
+	if len(devices) == 0 {
+		return
+	}
+	ranked := pipe.Engine().Ranked(devices, time.Now())
 	if len(ranked) == 0 {
 		return
 	}
