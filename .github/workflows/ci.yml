@@ -19,10 +19,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          # Deliberately not pinned to go.sum: the module has zero external
-          # dependencies, so no go.sum exists yet. Auto-detection handles
-          # both that and the eventual addition of a dependency.
           cache: true
+
+      - name: Debug environment
+        run: |
+          echo "Go version: $(go version)"
+          echo "GOPATH: ${GOPATH:-unset}"
+          echo "GOMODCACHE: ${GOMODCACHE:-unset}"
+          echo "PWD: $(pwd)"
+          echo "Files: $(ls -la)"
 
       - name: Verify formatting
         run: |
