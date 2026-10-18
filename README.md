@@ -128,7 +128,9 @@ See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Proving it works
 
-We are not going to ask you to take containment efficacy on faith. The lab in `agent/tests/lab/` stands up a containerized multi-segment network and measures R0 with and without containment enabled. The number it produces is the metric this project is judged on.
+We are not going to ask you to take containment efficacy on faith. The lab in `agent/tests/lab/` runs a propagating population across a simulated network and measures R0 with and without containment enabled.
+
+It is worth being exact about what that does and does not show. The lab is a discrete-time model driven by the real scoring engine: it seeds one infected device among fifty, lets each one infect neighbours at a fixed rate, and re-evaluates containment every step. It contains no network, no containers, and no malware. What it demonstrates is that the detection and containment path terminates an outbreak — with the engine engaged, the outbreak stops growing; without it, it takes the whole network. What it does **not** demonstrate is that a real worm on real hardware is contained by these numbers, because the spread model is the one written for the test. Treat the R0 figures it prints as evidence about the control logic, not as a field measurement.
 
 ---
 

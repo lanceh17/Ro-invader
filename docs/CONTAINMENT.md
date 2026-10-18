@@ -128,14 +128,16 @@ A quarantined device's DNS resolves through us authoritatively, which means we c
 
 Claims about containment efficacy should be measurable. The lab in `agent/tests/lab/` exists to produce a number.
 
-The lab stands up a containerized multi-segment network, seeds a propagating agent that moves an artifact between hosts and beacons on a schedule, and counts successful propagation events per infected host over a fixed observation window.
+What actually runs today is a discrete-time model driven by the real scoring engine, not a network. It builds a population of devices, seeds one infected, and steps: every infected and uncontained device infects a random susceptible neighbour with some probability, each infection emits a weight-transfer signal, every infected device emits a DNS-drift signal, and the real `risk.Engine` re-scores everyone. A device the engine puts in the quarantine tier stops spreading, because in the model containment removes the ability to resolve a new target. The control run disables that and lets the outbreak run to saturation.
 
-- **Control run:** containment disabled. Measure observed R0.
-- **Treatment run:** containment enabled at `restrict` or `quarantine`. Measure observed R0.
+- **Control run:** containment disabled. Measure how far the outbreak spreads.
+- **Treatment run:** containment enabled. Measure the same thing.
 
-The success criterion for the containment core is that the treatment run produces R0 below 1.
+The number it reports is the average secondary infections per infected device.
 
-The propagating agent in the lab is a **propagation simulator**, not a replicator: it moves an inert file and emits scheduled connections. It contains no model weights, no inference engine, and no exploitation logic. Its purpose is to produce measurable propagation events that the containment system must interrupt. See [SAFETY.md](SAFETY.md) for why the distinction is enforced.
+Read that figure carefully, because in a finite population it cannot exceed 1: once every device is infected, the last generation has nobody left to infect and the average is pulled under 1 whatever the underlying reproduction rate was. The control run therefore reports just under 1 — the population is saturated, not stable — and the treatment run reports lower still, because containment stops the outbreak well short of saturation. **A control figure above 1, which is what the v0.1 exit criterion asks for, is not something this lab can currently produce.** Demonstrating it needs a population large enough that the growth phase is observable before saturation, and that measurement has not been made. The lab is not the v0.1 release gate yet.
+
+The spread model is the one written for the test: a fixed per-step infection probability, not a measured one. So the figures are evidence about the control logic — that engaging the engine terminates an outbreak and leaving it off does not — and not a field measurement of how a real worm behaves. Nothing here is a replicator, a payload, or an exploitation harness: there are no model weights, no inference engine, and no exploit code anywhere in the lab. See [SAFETY.md](SAFETY.md) for why that distinction is enforced.
 
 ---
 
