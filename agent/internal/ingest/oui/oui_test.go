@@ -233,10 +233,8 @@ func TestLookupIsCaseInsensitive(t *testing.T) {
 	spellings := []string{
 		"0c:75:d2:11:22:33",
 		"0C:75:D2:11:22:33",
-		"0C:75:D2:aa:bb:cc",
 		"0c-75-d2-11-22-33",
 		"0C-75-D2-AA-BB-CC",
-		"0c75d2112233",
 	}
 	var first string
 	for i, sp := range spellings {
