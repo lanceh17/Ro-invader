@@ -27,27 +27,27 @@ type Attributor interface {
 // its JSON log output (cowrie.json or cowrie.json.XX). This process
 // boundary is both the legal boundary and the correct architecture.
 type Subprocess struct {
-	cmd      *exec.Cmd
-	stdout   io.ReadCloser
-	stderr   io.ReadCloser
-	mu       sync.Mutex
-	started  bool
-	stopped  bool
-	err      error
-	wg       sync.WaitGroup
+	cmd     *exec.Cmd
+	stdout  io.ReadCloser
+	stderr  io.ReadCloser
+	mu      sync.Mutex
+	started bool
+	stopped bool
+	err     error
+	wg      sync.WaitGroup
 
 	// Config
-	BinPath     string            // Path to python interpreter running cowrie
-	ConfigPath  string            // Path to cowrie.cfg
-	LogPath     string            // Path to cowrie.json log file
-	WorkDir     string            // Working directory (cowrie installation)
-	ExtraArgs   []string          // Extra command-line arguments
+	BinPath    string   // Path to python interpreter running cowrie
+	ConfigPath string   // Path to cowrie.cfg
+	LogPath    string   // Path to cowrie.json log file
+	WorkDir    string   // Working directory (cowrie installation)
+	ExtraArgs  []string // Extra command-line arguments
 
 	// Runtime
-	attr Attributor
-	ctx    context.Context
-	cancel context.CancelFunc
-	muLog  sync.Mutex
+	attr    Attributor
+	ctx     context.Context
+	cancel  context.CancelFunc
+	muLog   sync.Mutex
 	logFile *os.File
 	logChan chan string
 }
