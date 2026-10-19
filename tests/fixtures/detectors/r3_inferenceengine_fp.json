@@ -1,0 +1,1 @@
+{"timestamp":"2026-10-18T10:00:00.000000+0000","event_type":"tls","src_ip":"192.168.1.50","src_port":50000,"dest_ip":"192.168.1.55","dest_port":11434,"proto":"TCP","tls":{"sni":"ollama.com","version":"TLS 1.3"}}

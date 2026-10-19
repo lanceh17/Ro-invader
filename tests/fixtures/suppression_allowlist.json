@@ -1,0 +1,42 @@
+{
+  "hikvision": {
+    "suppressed_detectors": ["r5_scanburst", "r9_beacon"],
+    "notes": "Hikvision cameras have known periodic cloud connections and mDNS discovery"
+  },
+  "dell": {
+    "suppressed_detectors": ["r5_scanburst", "r6_authfanout", "r3_inferenceengine"],
+    "notes": "Dell workstations legitimately run inference, scan, and admin"
+  },
+  "espressif": {
+    "suppressed_detectors": ["r9_beacon"],
+    "notes": "Espressif IoT devices have periodic cloud connections"
+  },
+  "raspberry pi foundation": {
+    "suppressed_detectors": ["r3_inferenceengine", "r5_scanburst"],
+    "notes": "Pi devices often run local inference and mDNS"
+  },
+  "cisco": {
+    "suppressed_detectors": ["r5_scanburst", "r9_beacon"],
+    "notes": "Cisco network equipment has periodic discovery and management"
+  },
+  "ubuntu": {
+    "suppressed_detectors": ["r3_inferenceengine", "r5_scanburst", "r6_authfanout"],
+    "notes": "Developer workstations run inference, scan, and admin tasks"
+  },
+  "microsoft": {
+    "suppressed_detectors": ["r5_scanburst", "r6_authfanout", "r3_inferenceengine"],
+    "notes": "Windows devices run admin tooling and inference"
+  },
+  "apple": {
+    "suppressed_detectors": ["r9_beacon", "r5_scanburst"],
+    "notes": "Apple devices have periodic cloud sync and discovery"
+  },
+  "google": {
+    "suppressed_detectors": ["r9_beacon", "r5_scanburst", "r3_inferenceengine"],
+    "notes": "Google devices have periodic cloud sync and developer inference"
+  },
+  "amazon": {
+    "suppressed_detectors": ["r9_beacon", "r5_scanburst"],
+    "notes": "Amazon devices have periodic cloud sync"
+  }
+}

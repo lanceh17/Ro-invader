@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-18T10:00:00.000000+0000","event_type":"flow","src_ip":"192.168.1.44","src_port":50000,"dest_ip":"3.170.12.33","dest_port":443,"proto":"TCP","flow":{"pkts_toserver":10000,"pkts_toclient":500,"bytes_toserver":600000000,"bytes_toclient":50000,"age":3600.0,"start":"2026-10-18T09:00:00.000000+0000"}}
+{"timestamp":"2026-10-18T10:00:00.000000+0000","event_type":"tls","src_ip":"192.168.1.44","src_port":50000,"dest_ip":"3.170.12.33","dest_port":443,"proto":"TCP","tls":{"sni":"cdn-lfs.huggingface.co","version":"TLS 1.3"}}

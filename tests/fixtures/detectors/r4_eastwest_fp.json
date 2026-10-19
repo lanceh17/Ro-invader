@@ -1,0 +1,1 @@
+{"timestamp":"2026-10-18T10:00:00.000000+0000","event_type":"flow","src_ip":"192.168.1.50","src_port":50000,"dest_ip":"192.168.1.100","dest_port":445,"proto":"TCP","flow":{"pkts_toserver":10000,"pkts_toclient":8000,"bytes_toserver":2000000000,"bytes_toclient":500000000,"age":7200.0,"start":"2026-10-18T08:00:00.000000+0000"}}

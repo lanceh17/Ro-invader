@@ -35,18 +35,18 @@ The shippable product. Everything needed to observe a network, score devices, an
 
 The nine signals in [DETECTION.md](DETECTION.md), each as a pure function with fixtures and a suppression mechanism.
 
-- [ ] R1 large transfer to model host
+- [x] R1 large transfer to model host
 - [x] R2 model-host SNI on IoT-class device
-- [ ] R3 inference engine signature on non-server device
-- [ ] R4 sustained east-west peer volume
-- [ ] R5 port-scan burst from LAN host
-- [ ] R6 authentication fan-out with credential reuse
+- [x] R3 inference engine signature on non-server device
+- [x] R4 sustained east-west peer volume
+- [x] R5 port-scan burst from LAN host
+- [x] R6 authentication fan-out with credential reuse
 - [x] R7 device DNS baseline deviation
-- [ ] R8 new device appearance (inventory transition)
-- [ ] R9 periodic beaconing on non-standard port
+- [x] R8 new device appearance (inventory transition)
+- [x] R9 periodic beaconing on non-standard port
 - [x] Per-device baseline accumulation and drift
-- [ ] Per-vendor suppression allowlists
-- [ ] Detection fixture corpus from published signatures
+- [x] Per-vendor suppression allowlists (see `tests/fixtures/suppression_allowlist.json`)
+- [x] Detection fixture corpus with true positive and false-positive profiles (see `tests/fixtures/detectors/`)
 
 **Exit criteria:** every detector has a fixture demonstrating both a true positive and a documented false-positive profile, and no detector can produce a containment action without corroboration.
 
