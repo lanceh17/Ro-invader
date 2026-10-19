@@ -65,16 +65,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
 
+      # Passive-only is an architectural commitment documented in SAFETY.md.
+      # These checks fail the build if a contribution introduces the specific
+      # patterns that would break it, so the commitment is enforced by CI
+      # rather than by reviewer vigilance alone.
+      #
+      # This is a tripwire, not a proof. It catches obvious regressions; a
+      # determined contributor could route around it. Human review of the
+      # actuator interface remains the real boundary.
       - name: Reject active probing patterns
         run: |
           set -euo pipefail
           fail=0
 
+          # Raw SYN or socket-level construction is the fingerprint of a
+          # scanner. The project has no legitimate reason to build packets.
           if grep -rn --include='*.go' -E 'golang\.org/x/net/icmp|syscall\.RawConn|SOCK_RAW|net\.DialIP' agent/ ; then
             echo "::error::Raw socket or ICMP usage found in agent/. R0-Invader is passive by architecture."
             fail=1
           fi
 
+          # Port-scan vocabulary has no place in a control plane that only
+          # reads telemetry.
           if grep -rn --include='*.go' -iE 'func .*(scan|probe|fuzz)' agent/ ; then
             echo "::error::scan/probe/fuzz function found in agent/. See SAFETY.md."
             fail=1
@@ -87,8 +99,14 @@ jobs:
           set -euo pipefail
           fail=0
 
-          if grep -rn --include='*.go' -E '"os/exec"' agent/ ; then
-            echo "::error::os/exec usage found in agent/. R0-Invader must not execute commands."
+          # The system pushes firewall rules over vendor APIs. It must never
+          # gain a general-purpose execution channel, because that turns a
+          # containment tool into a remote-control tool.
+          # EXCEPTION: agent/internal/ingest/suricata/ uses os/exec to spawn
+          # Suricata as a subprocess (GPL boundary - EVE JSON over pipe).
+          # This is the intended architecture: "Consume it as a subprocess instead"
+          if grep -rn --include='*.go' -E '"os/exec"' agent/ | grep -v 'agent/internal/ingest/suricata/'; then
+            echo "::error::os/exec usage found in agent/ (outside suricata). R0-Invader must not execute commands."
             fail=1
           fi
 
