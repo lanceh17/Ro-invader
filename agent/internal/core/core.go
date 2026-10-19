@@ -1,11 +1,7 @@
-// Package core holds the shared types every other package depends on.
-//
-// The shapes here are deliberately narrow. Detectors accept only
-// NormalizedEvent, which is what lets them be pure functions testable
-// with no Suricata, no router, and no hardware present.
 package core
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"time"
@@ -195,11 +191,8 @@ type Signal struct {
 	DeviceMAC  net.HardwareAddr
 	Weight     float64
 	Confidence float64
-	// Reason is rendered into the remediation portal. A user who has just
-	// had their security camera disconnected deserves a sentence explaining
-	// why, not a signal code.
-	Reason   string
-	Evidence map[string]any
+	Reason     string
+	Evidence   map[string]any
 }
 
 // Detector is a pure function over normalized telemetry. Implementations
@@ -208,4 +201,123 @@ type Signal struct {
 type Detector interface {
 	Kind() SignalKind
 	Evaluate(NormalizedEvent) []Signal
+}
+
+// IoCType categorizes the type of indicator of compromise.
+type IoCType string
+
+const (
+	IoCTypeMalwareDownload   IoCType = "malware_download"
+	IoCTypeConnectionAttempt IoCType = "connection_attempt"
+	IoCTypeAuthAttempt       IoCType = "auth_attempt"
+	IoCTypeCommandExecution  IoCType = "command_execution"
+	IoCTypeC2Callback        IoCType = "c2_callback"
+	IoCTypeDataExfil         IoCType = "data_exfiltration"
+)
+
+// IoC is an indicator of compromise with provenance tracking.
+//
+// Each IoC carries a provenance tag identifying its source (suricata, cowrie,
+// dionaea, feeds, etc.) so that downstream consumers can apply different
+// trust levels or suppression rules based on source reliability.
+type IoC struct {
+	Source    string    // Provenance: "suricata", "cowrie", "dionaea", "feeds", etc.
+	Timestamp time.Time // When the IoC was observed
+	Type      IoCType   // Classification of the indicator
+	SrcIP     netip.Addr
+	SrcPort   uint16
+	DstIP     netip.Addr
+	DstPort   uint16
+	Protocol  string
+
+	// For file-based IoCs
+	URL    string
+	SHA256 string
+	MD5    string
+
+	// Tags for categorization and suppression
+	Tags     []string
+	Evidence map[string]any
+}
+
+// ToSignal converts an IoC to a Signal for the risk engine.
+//
+// The Signal is constructed with the appropriate kind, class, weight, and confidence
+// based on the IoC type and source. Returns nil if the IoC cannot be converted
+// to a signal (e.g., missing required fields).
+func (i IoC) ToSignal() *Signal {
+	// Map IoCType to SignalKind and SignalClass
+	var kind SignalKind
+	var class SignalClass
+	var weight float64
+	var confidence float64
+	var reason string
+
+	switch i.Type {
+	case IoCTypeMalwareDownload:
+		kind = SignalWeightTransfer
+		class = SignalReplicationRequired
+		weight = 35
+		confidence = 0.7
+		reason = fmt.Sprintf("malware download from %s (SHA256: %s)", i.URL, i.SHA256)
+	case IoCTypeConnectionAttempt:
+		kind = SignalModelHostOnIoT
+		class = SignalReplicationRequired
+		weight = 20
+		confidence = 0.6
+		reason = fmt.Sprintf("connection to model-hosting endpoint %s", i.URL)
+	case IoCTypeAuthAttempt:
+		kind = SignalAuthFanout
+		class = SignalReplicationRequired
+		weight = 28
+		confidence = 0.65
+		reason = fmt.Sprintf("authentication fan-out attempt")
+	case IoCTypeCommandExecution:
+		kind = SignalInferenceEngine
+		class = SignalPoCArtifact
+		weight = 15
+		confidence = 0.5
+		reason = fmt.Sprintf("command execution detected")
+	case IoCTypeC2Callback:
+		kind = SignalBeacon
+		class = SignalPoCArtifact
+		weight = 8
+		confidence = 0.35
+		reason = fmt.Sprintf("periodic beaconing on port %d", i.DstPort)
+	case IoCTypeDataExfil:
+		kind = SignalEastWestVolume
+		class = SignalReplicationRequired
+		weight = 25
+		confidence = 0.6
+		reason = fmt.Sprintf("sustained east-west volume")
+	default:
+		return nil
+	}
+
+	return &Signal{
+		Kind:       kind,
+		Class:      class,
+		DeviceMAC:  net.HardwareAddr{}, // Will be set by caller
+		Weight:     weight,
+		Confidence: confidence,
+		Reason:     reason,
+		Evidence:   i.Evidence,
+	}
+}
+
+// IoCFeed is an interface for consuming IoCs from various sources.
+type IoCFeed interface {
+	// Next returns the next IoC. Returns false at end of input or on error.
+	Next() (IoC, bool)
+	// Err returns any error encountered during iteration.
+	Err() error
+}
+
+// IoCProcessor processes IoCs from feeds into the risk engine.
+type IoCProcessor interface {
+	// Ingest adds an IoC to the risk engine, returning the affected device MAC
+	// and whether the IoC was actionable.
+	Ingest(IoC) (net.HardwareAddr, bool)
+	// Flush commits any pending IoCs.
+	Flush() error
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -17,7 +18,7 @@ import (
 
 // Attributor resolves a LAN-side IP to the device that owns it.
 type Attributor interface {
-	MACFor(ip netip.Addr) (string, bool)
+	MACFor(ip netip.Addr) (net.HardwareAddr, bool)
 }
 
 // Subprocess manages a Cowrie honeypot subprocess lifecycle.
