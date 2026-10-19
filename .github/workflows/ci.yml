@@ -105,11 +105,12 @@ jobs:
           # The system pushes firewall rules over vendor APIs. It must never
           # gain a general-purpose execution channel, because that turns a
           # containment tool into a remote-control tool.
-          # EXCEPTION: agent/internal/ingest/suricata/ and agent/internal/ingest/cowrie/
-          # use os/exec to spawn Suricata/Cowrie as subprocesses (GPL boundary).
+          # EXCEPTION: agent/internal/ingest/suricata/, agent/internal/ingest/cowrie/,
+          # and agent/internal/ingest/dionaea/ use os/exec to spawn
+          # Suricata/Cowrie/Dionaea as subprocesses (GPL boundary).
           # This is the intended architecture: "Consume it as a subprocess instead"
-          if grep -rn --include='*.go' -E '"os/exec"' agent/ | grep -v 'agent/internal/ingest/suricata/' | grep -v 'agent/internal/ingest/cowrie/'; then
-            echo "::error::os/exec usage found in agent/ (outside suricata). R0-Invader must not execute commands."
+          if grep -rn --include='*.go' -E '"os/exec"' agent/ | grep -v 'agent/internal/ingest/suricata/' | grep -v 'agent/internal/ingest/cowrie/' | grep -v 'agent/internal/ingest/dionaea/'; then
+            echo "::error::os/exec usage found in agent/ (outside suricata/cowrie/dionaea). R0-Invader must not execute commands."
             fail=1
           fi
 
